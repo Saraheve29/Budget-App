@@ -261,6 +261,13 @@
   }
   .cal-daygroup.is-gone{ opacity:0.72; background:var(--pink-1); }
   .cal-daylabel.cal-fold:active{ opacity:0.7; }
+  .backup-nudge{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background: linear-gradient(135deg, #fff6f9, var(--pink-1));
+    border:1.5px dashed var(--pink-3); border-radius:14px;
+    padding:10px 12px; margin:4px 0 10px;
+  }
+  .backup-nudge span{ font-size:0.82rem; font-weight:700; flex:1; min-width:150px; }
   .year-table{ border:1.5px solid var(--border); border-radius:14px; overflow:hidden; margin-bottom:10px; }
   .year-row{
     display:grid; grid-template-columns: 1.5fr 1fr 1fr 1fr; gap:4px;
@@ -390,6 +397,9 @@ let listAdding = { income:false, outgoings:false }; // the 'add' form at the top
 let listAddingTo = null;   // income id whose 'add an outgoing to this payment' form is open
 let outgoingGroupOpen = {}; // which payment's outgoings are unfolded on the Outgoings tab
 let yearOpen = false;         // the whole-year panel on the Overview
+let restoreOffer = null;      // a loaded backup file waiting to be confirmed
+let backupNotice = '';        // a short message after saving or restoring
+let forcedChangeLabel = '';   // set when an action knows better than the before/after guess
 let calBlockOpen = {};        // which calendar day-blocks are unfolded
 // Browsers block confirm() inside an embedded page, so a tap on Delete would
 // silently do nothing. These ask in the page itself instead.
@@ -404,7 +414,7 @@ function hasOpenEditor(){
     editingTripDetailsId || editingTripPaidFor || editingTripBudgetFor || tripQuickAddFor ||
     editingIncomePaymentFor || editingTiedItem || editingMonthEntry || addingForDateKey || incomeAdding ||
     overviewAdding || searchEditingItemId || searchPaidEditing ||
-    searchConfirm || tripConfirmDelete ||
+    searchConfirm || tripConfirmDelete || restoreOffer ||
     listAdding.income || listAdding.outgoings || listAddingTo
   );
 }
@@ -412,6 +422,29 @@ let lastLocalWriteAt = 0; // stops an in-flight/late snapshot from reverting a s
 let saveFailedNotice = false; // true when the last save couldn't reach the cloud
 const SNAPSHOT_SUPPRESS_MS = 5000;
 const LOCAL_KEY = "money_bloom_state_v1";
+const BACKUP_KEY = "money_bloom_last_backup";
+function lastBackupAt(){
+  try{ return localStorage.getItem(BACKUP_KEY) || ''; }catch(e){ return ''; }
+}
+function markBackedUp(){
+  try{ localStorage.setItem(BACKUP_KEY, toDateStr(new Date())); }catch(e){}
+}
+// Returns null when there is nothing to nag about — including when this
+// browser won't let us remember, so it can't nag wrongly.
+function backupDue(){
+  let stored;
+  try{ stored = localStorage.getItem(BACKUP_KEY); }
+  catch(e){ return null; }
+  if(!stored) return { days: null, text: "You haven't saved a backup yet" };
+  const then = new Date(stored + "T00:00:00");
+  if(isNaN(then.getTime())) return { days: null, text: "You haven't saved a backup yet" };
+  const days = Math.floor((Date.now() - then.getTime()) / 86400000);
+  if(days < 30) return null;
+  const months = Math.floor(days / 30);
+  return { days: days, text: months >= 2
+    ? ('Your last backup was ' + months + ' months ago')
+    : 'Your last backup was over a month ago' };
+}
 
 function fmt(n){
   n = Number(n)||0;
@@ -432,7 +465,7 @@ function freqLabel(f){
 }
 function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
 
-const SEED_DATA = {"overrides":{"inc2|2026-10":300,"exp7|2027-02":100},"skips":{},"expenses":[{"amount":636.39,"frequency":"monthly","id":"exp1","name":"Rent","date":"2026-09-23"},{"amount":12,"frequency":"monthly","id":"exp2","name":"Phone","date":"2026-09-23"},{"amount":19.48,"frequency":"monthly","id":"exp3","name":"Water","date":"2026-09-23"},{"amount":120,"frequency":"monthly","id":"exp4","name":"Gas/Electric","date":"2026-09-23"},{"amount":40,"frequency":"monthly","id":"exp5","name":"Internet","date":"2026-09-23"},{"amount":400,"frequency":"monthly","id":"exp6","name":"Food","date":"2026-09-23"},{"amount":200,"frequency":"monthly","id":"exp7","name":"Nationwide Savings","date":"2026-09-23"},{"amount":25,"frequency":"monthly","id":"exp8","name":"Vanguard","date":"2026-09-23"},{"amount":50,"date":"2026-09-23","frequency":"oneoff","id":"exp9","name":"Peter's birthday present"},{"amount":200,"date":"2026-09-28","frequency":"oneoff","id":"exp10","name":"Butlins"},{"amount":300,"date":"2026-10-06","frequency":"oneoff","id":"exp11","name":"Christmas presents"},{"amount":200,"date":"2026-10-23","frequency":"oneoff","id":"exp12","name":"Towards Christmas presents"},{"amount":200,"date":"2026-10-23","frequency":"oneoff","id":"exp13","name":"Holiday savings"},{"amount":200,"date":"2026-10-23","frequency":"oneoff","id":"exp14","name":"Butlins (going home)"},{"amount":200,"date":"2026-10-26","frequency":"oneoff","id":"exp15","name":"Haven spending money"},{"amount":200,"date":"2026-11-03","frequency":"oneoff","id":"exp16","name":"Christmas presents"},{"amount":300,"date":"2026-11-23","frequency":"oneoff","id":"exp17","name":"Christmas presents"},{"amount":200,"date":"2026-11-23","frequency":"oneoff","id":"exp18","name":"Christmas presents (extra)"},{"amount":200,"date":"2026-12-23","frequency":"oneoff","id":"exp19","name":"Christmas food"},{"amount":300,"date":"2027-01-18","frequency":"oneoff","id":"exp20","name":"Maleeka's birthday presents"},{"amount":200,"date":"2027-01-23","frequency":"oneoff","id":"exp21","name":"Maleeka's presents"},{"amount":60,"date":"2027-01-23","frequency":"oneoff","id":"exp22","name":"Flights (large cabin seats)"},{"amount":8,"date":"2027-01-23","frequency":"oneoff","id":"exp23","name":"Oasis zoo bus tickets"},{"amount":100,"date":"2027-02-22","frequency":"oneoff","id":"exp24","name":"Tandem Savings"},{"amount":146,"date":"2026-09-23","frequency":"oneoff","id":"exp25","name":"Haven"},{"amount":240,"date":"2026-09-23","frequency":"oneoff","id":"exp26","name":"Spending money (12 days)"},{"amount":340,"date":"2026-10-06","frequency":"oneoff","id":"exp27","name":"Spending money (17 days)"},{"amount":60,"date":"2026-10-23","frequency":"oneoff","id":"exp28","name":"Spending money (3 days)"},{"amount":140,"date":"2026-10-26","frequency":"oneoff","id":"exp29","name":"Spending money (7 days)"},{"amount":400,"date":"2026-11-03","frequency":"oneoff","id":"exp30","name":"Spending money (20 days)"},{"amount":140,"date":"2026-11-23","frequency":"oneoff","id":"exp31","name":"Spending money (7 days)"},{"amount":420,"date":"2026-12-01","frequency":"oneoff","id":"exp32","name":"Spending money (21 days)"},{"amount":320,"date":"2026-12-23","frequency":"oneoff","id":"exp33","name":"Spending money (to last until next payment)"},{"amount":300,"date":"2026-12-28","frequency":"oneoff","id":"exp34","name":"Spending money (to last until next payment)"},{"amount":100,"date":"2027-01-18","frequency":"oneoff","id":"exp35","name":"Spending money (to last until next payment)"},{"amount":400,"date":"2027-01-26","frequency":"oneoff","id":"exp36","name":"Spending money (20 days)"},{"amount":140,"date":"2027-02-15","frequency":"oneoff","id":"exp37","name":"Spending money (8 days)"},{"amount":540,"date":"2027-02-23","frequency":"oneoff","id":"exp38","name":"Spending money (27 days)"},{"amount":140,"date":"2027-03-23","frequency":"oneoff","id":"exp39","name":"Spending money (7 days)"},{"amount":140,"date":"2027-03-30","frequency":"oneoff","id":"exp40","name":"Spending money (7 days)"},{"amount":140,"date":"2027-04-12","frequency":"oneoff","id":"exp41","name":"Spending money (7 days)"},{"amount":60,"date":"2027-04-20","frequency":"oneoff","id":"exp42","name":"Spending money (to last until next payment)"},{"amount":340,"date":"2027-04-23","frequency":"oneoff","id":"exp43","name":"Spending money (17 days)"},{"amount":100,"date":"2027-05-18","frequency":"oneoff","id":"exp44","name":"Spending money (5 days)"},{"amount":300,"date":"2027-05-23","frequency":"oneoff","id":"exp45","name":"Spending money (15 days)"},{"amount":140,"date":"2027-06-07","frequency":"oneoff","id":"exp46","name":"Spending money (7 days)"},{"amount":146,"date":"2026-10-06","frequency":"oneoff","id":"exp47","name":"Haven"},{"amount":146,"date":"2026-11-03","frequency":"oneoff","id":"exp48","name":"Haven"},{"amount":146,"date":"2026-12-01","frequency":"oneoff","id":"exp49","name":"Haven"},{"amount":500,"date":"2027-02-23","frequency":"oneoff","id":"exp50","name":"Haven spending money"},{"amount":200,"date":"2027-03-23","frequency":"oneoff","id":"exp51","name":"Grange Park spending money (extra)"},{"amount":300,"date":"2027-04-19","frequency":"oneoff","id":"exp52","name":"Grange Park spending money (extra)"}],"goals":[],"incomes":[{"amount":1873,"frequency":"monthly","id":"inc1","name":"Universal Credit","date":"2026-09-23"},{"amount":333.4,"frequency":"fourweekly","id":"inc2","name":"Carer's Allowance","date":"2026-10-05"},{"amount":558.4,"frequency":"fourweekly","id":"inc3","name":"Maleeka DLA","date":"2026-10-06"},{"amount":558.4,"frequency":"fourweekly","id":"inc4","name":"Maliki PIP","date":"2026-09-28"},{"amount":441.6,"frequency":"fourweekly","id":"inc5","name":"Your PIP","date":"2026-10-06"}],"trips":[{"destination":"Skegness","endDate":"2026-10-26","id":"trip1","itinerary":[],"name":"Butlins Skegness","accommodationBudget":0,"spendingBudget":800,"payments":[{"amount":200,"date":"2026-07-14","id":"t1p1","label":"Savings towards Butlins","category":"spending"},{"amount":200,"date":"2026-08-03","id":"t1p2","label":"Savings towards Butlins","category":"spending"},{"amount":100,"date":"2026-08-10","id":"t1p3","label":"Savings towards Butlins","category":"spending"},{"amount":200,"date":"2026-08-11","id":"t1p4","label":"Savings towards Butlins","category":"spending"},{"amount":100,"date":"2026-10-23","id":"t1p5","label":"Butlins spending money","category":"spending"}],"startDate":"2026-10-23"},{"destination":"Fuerteventura","endDate":"2027-02-18","id":"trip2","itinerary":[{"cost":0,"date":"2027-02-11","id":"t2i1","label":"Arrival & hotel check-in - Free day"},{"cost":0,"date":"2027-02-12","id":"t2i2","label":"Free day"},{"cost":60,"date":"2027-02-13","id":"t2i3","label":"Zoo (incl. transport, book tickets & bus on official website)"},{"cost":0,"date":"2027-02-14","id":"t2i4","label":"Free day"},{"cost":113.44,"date":"2027-02-15","id":"t2i5","label":"North Day Tour"},{"cost":0,"date":"2027-02-16","id":"t2i6","label":"Free hotel day"},{"cost":93.37,"date":"2027-02-17","id":"t2i7","label":"Highlights Tour with Lunch"},{"cost":0,"date":"2027-02-18","id":"t2i8","label":"Go home - Free day"}],"name":"Barcelo Fuerteventura Castillo","accommodationBudget":2227.9,"spendingBudget":1400,"payments":[{"amount":93,"date":"2027-02-22","id":"t2p1","label":"Towards airport hotels (Tandem)","category":"accommodation"},{"amount":200,"date":"2027-01-23","id":"t2p2","label":"Final transfer toward airport hotel","category":"accommodation"},{"amount":155,"date":"2027-02-10","id":"t2p3","label":"Radisson Blu Stansted","category":"accommodation"},{"amount":1610.13,"date":"2027-02-11","id":"t2p4","label":"Fuerteventura Hotel Balance","category":"accommodation"},{"amount":137.77,"date":"2027-02-18","id":"t2p5","label":"Hampton by Hilton","category":"accommodation"},{"amount":32,"date":"2027-02-11","id":"t2p6","label":"Airport transfer (return) - holidayextras.com","category":"accommodation"}],"startDate":"2027-02-11"},{"destination":"Grange Park","endDate":"","id":"trip3","itinerary":[],"name":"Parkdean Highfield Grange","accommodationBudget":1583.25,"accommodationDueDate":"2027-03-31","spendingBudget":1000,"payments":[{"amount":300,"date":"2026-09-07","id":"t3p1","label":"Accommodation payment","category":"accommodation"},{"amount":300,"date":"2026-10-05","id":"t3p2","label":"Accommodation payment","category":"accommodation"},{"amount":200,"date":"2027-01-25","id":"t3p3","label":"Accommodation payment","category":"accommodation"},{"amount":300,"date":"2027-03-22","id":"t3p4","label":"Spending money","category":"spending"},{"amount":300,"date":"2027-03-23","id":"t3p5","label":"Spending money","category":"spending"},{"amount":200,"date":"2027-04-19","id":"t3p6","label":"Spending money","category":"spending"},{"amount":200,"date":"2027-05-10","id":"t3p7","label":"Spending money","category":"spending"}],"startDate":""},{"destination":"Seashore","endDate":"2027-08-27","id":"trip4","itinerary":[{"cost":0,"date":"2027-08-23","id":"t4i1","label":"4 nights - Booking ref 17131682"},{"cost":500,"date":"2027-02-23","id":"t4i2","label":"Spending money (from PIP/DLA)"}],"name":"Haven Seashore","accommodationBudget":1314,"spendingBudget":500,"payments":[{"amount":146.01,"date":"2026-10-23","id":"t4p1","label":"Haven instalment","category":"accommodation"},{"amount":146.01,"date":"2026-11-23","id":"t4p2","label":"Haven instalment","category":"accommodation"},{"amount":146.01,"date":"2026-12-23","id":"t4p3","label":"Haven instalment","category":"accommodation"},{"amount":146.01,"date":"2027-01-23","id":"t4p4","label":"Haven instalment","category":"accommodation"},{"amount":146.01,"date":"2027-02-23","id":"t4p5","label":"Haven instalment","category":"accommodation"},{"amount":146.01,"date":"2027-03-23","id":"t4p6","label":"Haven instalment","category":"accommodation"},{"amount":146.01,"date":"2027-04-23","id":"t4p7","label":"Haven instalment","category":"accommodation"},{"amount":146.01,"date":"2027-05-23","id":"t4p8","label":"Haven instalment","category":"accommodation"},{"amount":145.92,"date":"2027-06-23","id":"t4p9","label":"Final Haven instalment","category":"accommodation"}],"startDate":"2027-08-23"}]};
+const SEED_DATA = {"incomes":[{"amount":345.8,"date":"2026-10-05","frequency":"fourweekly","id":"inc2","name":"Carer's Allowance"},{"amount":579.6,"date":"2026-10-06","frequency":"fourweekly","id":"inc3","name":"Maleeka DLA"},{"amount":579.6,"date":"2026-09-28","frequency":"fourweekly","id":"inc4","name":"Maliki PIP"},{"amount":458.4,"date":"2026-10-06","frequency":"fourweekly","id":"inc5","name":"Your PIP"},{"amount":1983.52,"date":"2026-09-23","frequency":"monthly","id":"uu09wu81mu9nf2b2","name":"Universal Credit"}],"expenses":[{"amount":636.39,"date":"2026-09-23","frequency":"monthly","fromIncome":"inc1","id":"exp1","name":"Rent"},{"amount":12,"date":"2026-09-23","frequency":"monthly","fromIncome":"inc1","id":"exp2","name":"Phone"},{"amount":19.48,"date":"2026-09-23","frequency":"monthly","fromIncome":"inc1","id":"exp3","name":"Water"},{"amount":155,"date":"2026-09-23","frequency":"monthly","fromIncome":"inc1","id":"exp4","name":"Gas/Electric"},{"amount":40,"date":"2026-09-23","frequency":"monthly","fromIncome":"inc1","id":"exp5","name":"Internet"},{"amount":400,"date":"2026-09-23","frequency":"monthly","fromIncome":"inc1","id":"exp6","name":"Food"},{"amount":200,"date":"2026-09-23","frequency":"monthly","fromIncome":"inc1","id":"exp7","name":"Tandem holiday savings"},{"amount":25,"date":"2026-09-23","frequency":"monthly","fromIncome":"inc1","id":"exp8","name":"Vanguard"},{"amount":300,"date":"2026-09-28","frequency":"oneoff","id":"exp10","name":"Butlins spending"},{"amount":300,"date":"2026-10-06","frequency":"oneoff","id":"exp11","name":"Christmas presents"},{"amount":200,"date":"2026-10-23","frequency":"oneoff","id":"exp12","name":"Towards Christmas presents"},{"amount":200,"date":"2026-10-23","frequency":"oneoff","id":"exp13","name":"Holiday savings"},{"amount":200,"date":"2026-10-26","frequency":"oneoff","id":"exp15","name":"Haven spending money"},{"amount":200,"date":"2026-11-03","frequency":"oneoff","id":"exp16","name":"Christmas presents"},{"amount":300,"date":"2026-11-23","frequency":"oneoff","id":"exp17","name":"Christmas presents"},{"amount":200,"date":"2026-11-23","frequency":"oneoff","id":"exp18","name":"Christmas presents (extra)"},{"amount":200,"date":"2026-12-23","frequency":"oneoff","id":"exp19","name":"Christmas food"},{"amount":300,"date":"2027-01-18","frequency":"oneoff","id":"exp20","name":"Maleeka's birthday presents"},{"amount":200,"date":"2027-01-23","frequency":"oneoff","id":"exp21","name":"Maleeka's presents"},{"amount":60,"date":"2027-01-23","frequency":"oneoff","id":"exp22","name":"Flights (large cabin seats)"},{"amount":8,"date":"2027-01-23","frequency":"oneoff","id":"exp23","name":"Oasis zoo bus tickets"},{"amount":100,"date":"2027-02-22","frequency":"oneoff","fromIncome":"inc2","id":"exp24","name":"Tandem Savings"},{"amount":240,"date":"2026-09-23","frequency":"oneoff","id":"exp26","name":"Spending money (12 days)"},{"amount":60,"date":"2026-10-23","frequency":"oneoff","id":"exp28","name":"Spending money (3 days)"},{"amount":140,"date":"2026-10-26","frequency":"oneoff","id":"exp29","name":"Spending money (7 days)"},{"amount":400,"date":"2026-11-03","frequency":"oneoff","id":"exp30","name":"Spending money (20 days)"},{"amount":140,"date":"2026-11-23","frequency":"oneoff","id":"exp31","name":"Spending money (7 days)"},{"amount":420,"date":"2026-12-01","frequency":"oneoff","id":"exp32","name":"Spending money (21 days)"},{"amount":320,"date":"2026-12-23","frequency":"oneoff","id":"exp33","name":"Spending money (to last until next payment)"},{"amount":300,"date":"2026-12-28","frequency":"oneoff","id":"exp34","name":"Spending money (to last until next payment)"},{"amount":100,"date":"2027-01-18","frequency":"oneoff","id":"exp35","name":"Spending money (to last until next payment)"},{"amount":400,"date":"2027-01-26","frequency":"oneoff","id":"exp36","name":"Spending money (20 days)"},{"amount":140,"date":"2027-02-15","frequency":"oneoff","id":"exp37","name":"Spending money (8 days)"},{"amount":540,"date":"2027-02-23","frequency":"oneoff","fromIncome":"inc1","id":"exp38","name":"Spending money (27 days)"},{"amount":140,"date":"2027-03-23","frequency":"oneoff","id":"exp39","name":"Spending money (7 days)"},{"amount":140,"date":"2027-03-15","frequency":"oneoff","id":"exp40","name":"Spending money (7 days)"},{"amount":140,"date":"2027-04-12","frequency":"oneoff","id":"exp41","name":"Spending money (7 days)"},{"amount":60,"date":"2027-04-20","frequency":"oneoff","id":"exp42","name":"Spending money (to last until next payment)"},{"amount":340,"date":"2027-04-23","frequency":"oneoff","id":"exp43","name":"Spending money (17 days)"},{"amount":100,"date":"2027-05-18","frequency":"oneoff","id":"exp44","name":"Spending money (5 days)"},{"amount":300,"date":"2027-05-23","frequency":"oneoff","id":"exp45","name":"Spending money (15 days)"},{"amount":140,"date":"2027-06-07","frequency":"oneoff","id":"exp46","name":"Spending money (7 days)"},{"amount":500,"date":"2027-02-23","frequency":"oneoff","fromIncome":"inc3","id":"exp50","name":"Haven spending money"},{"amount":200,"date":"2027-03-23","frequency":"oneoff","id":"exp51","name":"Grange Park spending money (extra)"},{"amount":300,"date":"2027-04-19","frequency":"oneoff","id":"exp52","name":"Grange Park spending money (extra)"},{"amount":50,"date":"2026-09-23","frequency":"oneoff","id":"jc8mj5hwmu9xcoio","name":"Peter's birthday present"},{"amount":340,"date":"2026-10-06","frequency":"oneoff","id":"exp27","name":"Spending money (17 days)"},{"amount":94,"date":"2026-10-06","frequency":"oneoff","fromIncome":"inc5","id":"5lgasudzmua8djf0","name":"Temu"}],"goals":[],"trips":[{"accommodationBudget":0,"accommodationHidden":true,"destination":"Skegness","endDate":"2026-10-26","id":"trip1","itinerary":[],"name":"Butlins Skegness","payments":[],"spendingBudget":800,"spendingPaidExtra":500,"startDate":"2026-10-23"},{"accommodationBudget":2227.9,"accommodationDueDate":"","destination":"Fuerteventura","endDate":"2027-02-18","id":"trip2","itinerary":[{"cost":0,"date":"2027-02-11","id":"t2i1","label":"Arrival & hotel check-in - Free day"},{"cost":0,"date":"2027-02-12","id":"t2i2","label":"Free day"},{"cost":60,"date":"2027-02-13","id":"t2i3","label":"Zoo (incl. transport, book tickets & bus on official website)"},{"cost":0,"date":"2027-02-14","id":"t2i4","label":"Free day"},{"cost":113.44,"date":"2027-02-15","id":"t2i5","label":"North Day Tour"},{"cost":0,"date":"2027-02-16","id":"t2i6","label":"Free hotel day"},{"cost":93.37,"date":"2027-02-17","id":"t2i7","label":"Highlights Tour with Lunch"},{"cost":0,"date":"2027-02-18","id":"t2i8","label":"Go home - Free day"}],"name":"Barcelo Fuerteventura Castillo","payments":[{"amount":93,"category":"accommodation","date":"2027-02-22","fromIncome":"inc2","id":"t2p1","label":"Towards airport hotels (Tandem)"},{"amount":200,"category":"accommodation","date":"2027-01-23","id":"t2p2","label":"Final transfer toward airport hotel"},{"amount":155,"category":"accommodation","date":"2027-02-10","id":"t2p3","label":"Radisson Blu Stansted"},{"amount":1610.13,"category":"accommodation","date":"2027-02-11","id":"t2p4","label":"Fuerteventura Hotel Balance"},{"amount":137.77,"category":"accommodation","date":"2027-02-18","id":"t2p5","label":"Hampton by Hilton"},{"amount":32,"category":"accommodation","date":"2027-02-11","id":"t2p6","label":"Airport transfer (return) - holidayextras.com"}],"spendingBudget":1400,"spendingDueDate":"","startDate":"2027-02-11"},{"accommodationBudget":1583.25,"accommodationDueDate":"2027-03-31","destination":"Grange Park","endDate":"","id":"trip3","itinerary":[],"name":"Parkdean Highfield Grange","payments":[{"amount":300,"category":"accommodation","date":"2026-10-05","id":"t3p2","label":"Accommodation payment"},{"amount":200,"category":"accommodation","date":"2027-01-25","id":"t3p3","label":"Accommodation payment"},{"amount":300,"category":"spending","date":"2027-03-22","id":"t3p4","label":"Spending money"},{"amount":300,"category":"spending","date":"2027-03-23","id":"t3p5","label":"Spending money"},{"amount":200,"category":"spending","date":"2027-04-19","id":"t3p6","label":"Spending money"},{"amount":200,"category":"spending","date":"2027-05-10","id":"t3p7","label":"Spending money"}],"spendingBudget":1000,"startDate":""},{"accommodationBudget":1344,"accommodationPaidExtra":30,"destination":"Seashore","endDate":"2027-08-27","id":"trip4","itinerary":[{"cost":0,"date":"2027-08-23","id":"t4i1","label":"4 nights - Booking ref 17131682"},{"cost":500,"date":"2027-02-23","id":"t4i2","label":"Spending money (from PIP/DLA)"}],"name":"Haven Seashore","payments":[{"amount":146.01,"category":"accommodation","date":"2026-09-23","id":"t4p1","label":"Haven instalment"},{"amount":146.01,"category":"accommodation","date":"2026-10-06","id":"t4p2","label":"Haven instalment"},{"amount":146.01,"category":"accommodation","date":"2026-11-03","id":"t4p3","label":"Haven instalment"},{"amount":146.01,"category":"accommodation","date":"2026-12-01","id":"t4p4","label":"Haven instalment"},{"amount":146.01,"category":"accommodation","date":"2027-01-23","fromIncome":"inc1","id":"t4p5","label":"Haven instalment"},{"amount":146.01,"category":"accommodation","date":"2027-03-23","id":"t4p6","label":"Haven instalment"},{"amount":146.01,"category":"accommodation","date":"2027-04-23","id":"t4p7","label":"Haven instalment"},{"amount":146.01,"category":"accommodation","date":"2027-05-23","id":"t4p8","label":"Haven instalment"},{"amount":145.92,"category":"accommodation","date":"2027-06-23","id":"t4p9","label":"Final Haven instalment"}],"spendingBudget":500,"startDate":"2027-08-23"}],"overrides":{"exp1|2026-09":636.39,"exp4|2026-09":155,"exp7|2027-02":100},"skips":{},"paidMarks":{}};
 
 function saveLocal(){
   try{ localStorage.setItem(LOCAL_KEY, JSON.stringify(state)); }catch(e){}
@@ -552,9 +585,12 @@ function describeChange(before, after){
 async function persist(){
   // Keep how things looked a moment ago, so any change can be taken back.
   if(lastSnapshot){
-    let label = '';
-    try{ label = describeChange(lastSnapshot, state); }catch(e){ label = ''; }
+    let label = forcedChangeLabel;
+    if(!label){
+      try{ label = describeChange(lastSnapshot, state); }catch(e){ label = ''; }
+    }
     undoStack.push({ snapshot: lastSnapshot, label: label });
+    forcedChangeLabel = '';
     if(undoStack.length > UNDO_LIMIT) undoStack.shift();
     undoBarDismissed = false;
   }
@@ -629,6 +665,12 @@ async function init(){
   }catch(e){}
   try{
     CAP.sample = await window.claude?.use?.("sample");
+  }catch(e){}
+  try{
+    // Inside the Claude app a plain download link does nothing; saving a file
+    // has to go through this. On the website it stays null and the ordinary
+    // browser download below is used instead.
+    CAP.downloads = await window.claude?.use?.("downloads");
   }catch(e){}
   // Same rule as the background-sync render above: if the app is still
   // finishing its startup checks by the time someone has already opened
@@ -758,6 +800,11 @@ function renderOverview(){
           </div>`).join('')}
         <div class="disclaimer" style="text-align:center;">Tap any month to open it. "Going out" counts holiday payments too.</div>
       </div>` : ''}
+      ${(()=>{ const due = backupDue(); return due ? `
+      <div class="backup-nudge">
+        <span>⏰ ${escapeHtml(due.text)}</span>
+        <button class="btn small backup-save-btn">⬇️ Save one now</button>
+      </div>` : ''; })()}
       <div class="row-btns" style="margin-top:4px;">
         <button class="btn small secondary" id="ovOpenCal" style="flex:1;">📅 Edit ${monthLabel.split(' ')[0]}'s payments</button>
         <button class="btn small" id="ovAddToggle" style="flex:1;">${overviewAdding?'✕ Cancel':'➕ Add a payment'}</button>
@@ -796,6 +843,38 @@ function renderOverview(){
       </form>`:''}
       ${usingLocalFallback ? `<div class="disclaimer">Saved on this device only right now — open this page the same way each time to keep your data.</div>`:''}
       ${saveFailedNotice ? `<div class="disclaimer" style="color:var(--bad);font-weight:700;">⚠️ Your last change couldn't reach the cloud, so it's only saved on this device for now. Try again with a good connection when you can.</div>`:''}
+    </div>
+    <div class="card">
+      <h2>💾 Backup</h2>
+      <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-4px;">
+        Your budget is saved ${usingLocalFallback ? 'on this device only' : 'to your account'}.
+        A backup is a small file you keep yourself — on a new phone, tap Restore and pick it.
+      </p>
+      ${(()=>{
+        const when = lastBackupAt();
+        if(!when) return '';
+        return `<div class="status-line" style="margin-top:-2px;">Last backup: <b>${fmtDate(when)}</b></div>`;
+      })()}
+      ${restoreOffer ? `
+      <div class="confirm-box">
+        <div class="confirm-text">
+          This backup holds <b>${restoreOffer.counts.incomes} payments</b>,
+          <b>${restoreOffer.counts.expenses} outgoings</b> and
+          <b>${restoreOffer.counts.trips} trips</b>${restoreOffer.savedAt?`, saved <b>${escapeHtml(restoreOffer.savedAt)}</b>`:''}.
+          <br>Restoring replaces everything you have now.
+          <br><span style="color:var(--text-soft);">You can take it back with the ↩️ Undo button afterwards.</span>
+        </div>
+        <div class="row-btns">
+          <button class="btn small" id="restoreYes" style="flex:1;">Yes, restore it</button>
+          <button class="btn small secondary" id="restoreNo" style="flex:1;">Cancel</button>
+        </div>
+      </div>` : `
+      <div class="row-btns">
+        <button class="btn small secondary backup-save-btn" style="flex:1;">⬇️ Save a backup</button>
+        <button class="btn small secondary" id="backupLoad" style="flex:1;">⬆️ Restore a backup</button>
+      </div>
+      <input type="file" id="backupFile" accept="application/json,.json" class="hidden">`}
+      ${backupNotice ? `<div class="status-line" style="font-weight:700;color:var(--pink-5);">${escapeHtml(backupNotice)}</div>` : ''}
     </div>
     <div class="card">
       <h2>📸 Add income from a screenshot</h2>
@@ -886,7 +965,128 @@ function renderOverview(){
       await persist();
     });
   }
+  setupBackupUI();
   setupScreenshotUI();
+}
+
+function setupBackupUI(){
+  document.querySelectorAll('.backup-save-btn').forEach(saveBtn=>{
+    saveBtn.addEventListener('click', async ()=>{
+      const stamp = new Date().toLocaleString('en-GB', {day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
+      const payload = { moneyBloomBackup: 1, savedAt: stamp, state: cloneState() };
+      const text = JSON.stringify(payload, null, 1);
+      const filename = 'money-bloom-backup-' + toDateStr(new Date()) + '.json';
+
+      if(CAP.downloads){
+        saveBtn.disabled = true;
+        try{
+          await CAP.downloads.save({ filename: filename, data: text });
+          markBackedUp();
+          backupNotice = 'Backup saved — keep it somewhere safe 🩷';
+        }catch(err){
+          const code = err && err.code;
+          if(code === 'declined')          backupNotice = 'No backup saved.';
+          else if(code === 'rate_limited') backupNotice = 'Give it a moment, then tap again.';
+          else                             backupNotice = "Couldn't save it here — try the same button on your own website.";
+        }
+        saveBtn.disabled = false;
+        renderOverview();
+        return;
+      }
+
+      // An ordinary browser (your website): a normal download.
+      let url = '', revoke = false;
+      try{
+        url = URL.createObjectURL(new Blob([text], {type:'application/json'}));
+        revoke = true;
+      }catch(e){
+        // Some in-app browsers don't do blob links; this works anywhere.
+        try{ url = 'data:application/json;charset=utf-8,' + encodeURIComponent(text); }catch(e2){ url = ''; }
+      }
+      if(url){
+        try{
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          if(revoke) setTimeout(()=>{ try{ URL.revokeObjectURL(url); }catch(e){} }, 2000);
+          markBackedUp();
+          backupNotice = 'Backup saved — keep it somewhere safe 🩷';
+        }catch(e){
+          backupNotice = "Couldn't save the file here — try again from your browser rather than an app window.";
+        }
+      } else {
+        backupNotice = "Couldn't save the file here — try again from your browser rather than an app window.";
+      }
+      renderOverview();
+    });
+  });
+
+  const loadBtn = document.getElementById('backupLoad');
+  const fileInput = document.getElementById('backupFile');
+  if(loadBtn && fileInput){
+    loadBtn.addEventListener('click', ()=> fileInput.click());
+    fileInput.addEventListener('change', ()=>{
+      const file = fileInput.files && fileInput.files[0];
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = ()=>{
+        try{
+          const parsed = JSON.parse(String(reader.result));
+          const st = parsed && parsed.state ? parsed.state : parsed;
+          // Only accept something that actually looks like a budget.
+          if(!st || !Array.isArray(st.incomes) || !Array.isArray(st.expenses)){
+            backupNotice = "That file isn't a Money Bloom backup.";
+            restoreOffer = null;
+          } else {
+            restoreOffer = {
+              state: st,
+              savedAt: parsed && parsed.savedAt ? parsed.savedAt : '',
+              counts: {
+                incomes: st.incomes.length,
+                expenses: st.expenses.length,
+                trips: Array.isArray(st.trips) ? st.trips.length : 0
+              }
+            };
+            backupNotice = '';
+          }
+        }catch(e){
+          backupNotice = "Couldn't read that file — it may be damaged.";
+          restoreOffer = null;
+        }
+        renderOverview();
+      };
+      reader.onerror = ()=>{ backupNotice = "Couldn't read that file."; renderOverview(); };
+      reader.readAsText(file);
+    });
+  }
+
+  const yes = document.getElementById('restoreYes');
+  if(yes){
+    yes.addEventListener('click', async ()=>{
+      const st = restoreOffer && restoreOffer.state;
+      restoreOffer = null;
+      if(!st) return;
+      state = {
+        incomes: Array.isArray(st.incomes) ? st.incomes : [],
+        expenses: Array.isArray(st.expenses) ? st.expenses : [],
+        goals: Array.isArray(st.goals) ? st.goals : [],
+        trips: Array.isArray(st.trips) ? st.trips : [],
+        overrides: (st.overrides && typeof st.overrides==='object') ? st.overrides : {},
+        skips: (st.skips && typeof st.skips==='object') ? st.skips : {},
+        paidMarks: (st.paidMarks && typeof st.paidMarks==='object') ? st.paidMarks : {}
+      };
+      backupNotice = 'Backup restored 🩷';
+      forcedChangeLabel = 'Restored a backup';
+      await persist();
+    });
+  }
+  const no = document.getElementById('restoreNo');
+  if(no){
+    no.addEventListener('click', ()=>{ restoreOffer = null; backupNotice = ''; renderOverview(); });
+  }
 }
 
 function renderIncomeExpansion(item){
