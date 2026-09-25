@@ -261,6 +261,24 @@
   }
   .cal-daygroup.is-gone{ opacity:0.72; background:var(--pink-1); }
   .cal-daylabel.cal-fold:active{ opacity:0.7; }
+  .paid-tick{
+    border:1.5px solid var(--pink-3); background:var(--card); color:var(--pink-4);
+    width:30px; height:30px; border-radius:50%; font-size:0.9rem; font-weight:800;
+    cursor:pointer; flex-shrink:0; line-height:1;
+  }
+  .paid-tick.is-done{ background:var(--good); border-color:var(--good); color:#fff; }
+  .item-row.row-paid .name{ text-decoration: line-through; }
+  .cal-line.line-paid .cname{ text-decoration: line-through; }
+  .mini-row.row-paid .mname{ text-decoration: line-through; }
+  .mini-row.row-paid{ opacity:0.62; }
+  .tick-progress{
+    display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;
+    margin-top:6px; padding-top:6px; border-top:1px dashed var(--border);
+    font-size:0.76rem; color:var(--text-soft);
+  }
+  .tick-progress b{ font-family:var(--font-head); color:var(--deep); font-size:0.88rem; }
+  .cal-line.line-paid{ opacity:0.62; }
+  .item-row.row-paid{ opacity:0.62; }
   .backup-nudge{
     display:flex; align-items:center; gap:10px; flex-wrap:wrap;
     background: linear-gradient(135deg, #fff6f9, var(--pink-1));
@@ -555,7 +573,13 @@ function describeChange(before, after){
   }
 
   const nameForKey = (k)=>{
-    const id = String(k).split('|')[0];
+    const id = String(k).split(/[|@]/)[0];
+    if(id.indexOf('trip-') === 0){
+      const pid = id.slice(5);
+      let found = '';
+      (after.trips||[]).forEach(t=>(t.payments||[]).forEach(pm=>{ if(pm.id===pid) found = pm.label || 'a holiday payment'; }));
+      return found;
+    }
     const item = (after.incomes||[]).concat(after.expenses||[]).find(x=>x.id===id);
     return item ? item.name : '';
   };
@@ -911,8 +935,9 @@ function renderOverview(){
     calViewMonth = new Date(calViewMonth.getFullYear(), calViewMonth.getMonth()+delta, 1);
     overviewAdding = false;
     editingMonthEntry = null;
-    renderOverview();
-    renderCalendar();
+    // Every tab shares this month, so they all have to move together —
+    // otherwise Income and Outgoings quietly keep showing the old one.
+    renderAll();
   };
   document.getElementById('ovPrev').addEventListener('click', ()=>goMonth(-1));
   document.getElementById('ovNext').addEventListener('click', ()=>goMonth(1));
@@ -923,8 +948,7 @@ function renderOverview(){
       calViewMonth = new Date(n.getFullYear(), n.getMonth(), 1);
       overviewAdding = false;
       editingMonthEntry = null;
-      renderOverview();
-      renderCalendar();
+      renderAll();
     });
   }
   document.getElementById('ovYearToggle').addEventListener('click', ()=>{
@@ -1117,6 +1141,12 @@ function renderIncomeExpansion(item){
 
   const totalTied = tied.reduce((s,x)=>s+x.amount,0);
   const remaining = amount - totalTied;
+  // What you've actually ticked off, so the figure moves as you pay things.
+  const tickedTotal = tied.reduce((s,x)=>{
+    const k = x.isTrip ? ('trip-'+x.paymentId) : (x.itemId + '@' + viewDateStr);
+    return isPaidEntry(k, viewDateStr) ? s + x.amount : s;
+  }, 0);
+  const stillToGo = totalTied - tickedTotal;
   const hasPaymentOverride = Object.prototype.hasOwnProperty.call(state.overrides||{}, overrideKey(item.id, viewDate));
 
   const paymentBoxHtml = editingIncomePaymentFor === item.id ? `
@@ -1168,13 +1198,18 @@ function renderIncomeExpansion(item){
           ? `<button class="del inc-skip" data-item="${x.itemId}" data-date="${viewDateStr}" title="Remove just from this date">✕</button>`
           : `<button class="del inc-del-oneoff" data-item="${x.itemId}" title="Delete">✕</button>`);
     const editBtn = `<button class="del edit-tied-btn" data-key="${editKey}" title="Edit">✏️</button>`;
+    const tKey = x.isTrip ? ('trip-'+x.paymentId) : (x.itemId + '@' + viewDateStr);
+    const tDone = isPaidEntry(tKey, viewDateStr);
     return `
-      <div class="cal-line">
+      <div class="cal-line${tDone?' line-paid':''}">
         <span class="cname tied-name-tap" data-key="${editKey}"
           style="cursor:pointer;text-decoration:underline dotted var(--pink-3);text-underline-offset:3px;"
-          title="Tap to change">${escapeHtml(x.name)}</span>
+          title="Tap to change">${escapeHtml(x.name)}
+          <span class="mdate">📅 ${fmtDate(viewDateStr)}${x.isTrip?' · on your Trips tab':''}</span>
+        </span>
         <span style="display:flex;align-items:center;gap:6px;">
           <span class="camt expense">−${fmt(x.amount)}</span>
+          <button class="paid-tick${tDone?' is-done':''}" data-key="${tKey}" data-date="${viewDateStr}" title="${tDone?'Paid — tap to untick':'Not paid yet — tap when it goes out'}">${tDone?'✓':'○'}</button>
           ${editBtn}
           ${delBtn}
         </span>
@@ -1208,12 +1243,37 @@ function renderIncomeExpansion(item){
         <div class="mini-stat">Coming out of this<b>${fmt(totalTied)}</b></div>
         <div class="mini-stat">Left from this<b style="${remaining<0?'color:var(--bad);':''}">${fmt(remaining)}</b></div>
       </div>
+      ${tied.length ? `<div class="tick-progress">
+        <span>✓ ${fmt(tickedTotal)} has gone out</span>
+        <span><b>${fmt(stillToGo)}</b> still to go</span>
+      </div>` : ''}
       ${hasPaymentOverride ? `<div style="text-align:center;margin:-4px 0 8px;"><button class="btn small secondary reset-payment-override" data-income="${item.id}">↺ Reset to usual ${fmt(item.amount)}</button></div>` : ''}
       <div class="subhead">🧾 What comes out of this payment</div>
       ${tiedHtml}
       ${addFormHtml}
     </div>
   `;
+}
+
+// Every screen with ticks uses this one handler, so they can't drift apart.
+function wirePaidTicks(scope){
+  scope.querySelectorAll('.paid-tick').forEach(b=>{
+    if(b.dataset.wired) return;
+    b.dataset.wired = '1';
+    b.addEventListener('click', async (ev)=>{
+      ev.stopPropagation();
+      const key = b.dataset.key;
+      if(!key) return;
+      const now = isPaidEntry(key, b.dataset.date || '');
+      state.paidMarks = state.paidMarks || {};
+      state.paidMarks[key] = !now;
+      const holder = b.closest('.item-row, .cal-line, .mini-row');
+      const nameEl = holder && holder.querySelector('.name, .cname, .mname');
+      const label = nameEl ? nameEl.textContent.replace(/📅[^·]*·?|edited|changed for this month.*/g,'').trim() : '';
+      forcedChangeLabel = (!now ? 'Ticked off ' : 'Unticked ') + (label || 'a payment');
+      await persist();
+    });
+  });
 }
 
 function renderList(kind){
@@ -1258,7 +1318,37 @@ function renderList(kind){
     return a.when - b.when;
   });
 
-  const itemHtml = (i)=>{
+  const paidKeyFor = (item, d)=> d ? (item.id + '@' + toDateStr(d)) : '';
+  const tickHtml = (key, dateStr)=>{
+    if(!key) return '';
+    const done = isPaidEntry(key, dateStr);
+    const t = kind === 'income'
+      ? (done ? 'Arrived — tap to untick' : "Hasn't arrived yet — tap when it lands")
+      : (done ? 'Paid — tap to untick' : 'Not paid yet — tap when it goes out');
+    return `<button class="paid-tick${done?' is-done':''}" data-key="${key}" data-date="${dateStr||''}"
+      title="${t}">${done?'✓':'○'}</button>`;
+  };
+
+  const itemHtml = (i, when)=>{
+    // Show the date it actually lands on in the month being viewed, not the
+    // anchor date it was first set up with — otherwise November still says
+    // "23 Sept" and the list looks out of order when it isn't.
+    const occs = i.date ? occurrencesInMonth(i, mStart, mEnd) : [];
+    // Show what it actually is in THIS month. A month you've edited must not
+    // keep showing the usual amount, or the row and the total disagree.
+    const effAmounts = occs.map(d=>getEffectiveAmount(i, d));
+    const sameEvery = effAmounts.every(v=>Math.abs(v-effAmounts[0]) < 0.005);
+    const shownAmount = effAmounts.length && sameEvery ? effAmounts[0] : (Number(i.amount)||0);
+    const amountText = effAmounts.length && !sameEvery
+      ? effAmounts.map(v=>fmt(v)).join(' + ')
+      : fmt(shownAmount);
+    const edited = effAmounts.length && Math.abs(shownAmount - (Number(i.amount)||0)) > 0.005;
+    const whenText = occs.length
+      ? (occs.length === 1
+          ? fmtDate(toDateStr(occs[0]))
+          : occs.map(d=>fmtDate(toDateStr(d))).join('  and  '))
+      : (i.date ? fmtDate(i.date) : '');
+    const notThisMonth = !occs.length && !!i.date;
     const isEditing = editingItem.kind===listKey && editingItem.id===i.id;
     if(isEditing){
       return `
@@ -1278,23 +1368,26 @@ function renderList(kind){
     }
     const expandable = kind === 'income';
     const isExpanded = expandable && expandedIncomeId === i.id;
+    const rowDone = occs.length && isPaidEntry(paidKeyFor(i, occs[0]), toDateStr(occs[0]));
     const rowHtml = `
-      <div class="item-row">
+      <div class="item-row${rowDone?' row-paid':''}">
         <div class="info info-click${expandable?'':' edit-name-tap'}" ${expandable?`data-expand-id="${i.id}"`:`data-kind="${listKey}" data-id="${i.id}"`}>
           <span class="name">${escapeHtml(i.name)}${expandable?` <span style="font-size:0.75rem;color:var(--pink-4);">${isExpanded?'▲':'▼ tap for details'}</span>`:''}</span>
-          <span class="freq">${fmt(i.amount)} · ${freqLabel(i.frequency)}</span>
+          <span class="freq">${amountText} · ${freqLabel(i.frequency)}${edited ? ` <span class="pill" style="text-transform:none;letter-spacing:0;">changed for this month · usually ${fmt(i.amount)}</span>` : ''}</span>
           ${i.date
-            ? `<span class="datepill">📅 ${fmtDate(i.date)}${i.frequency!=='oneoff' ? ' (next)' : ''}</span>`
+            ? `<span class="datepill">📅 ${whenText}${occs.length > 1 ? ` <span class="pill" style="text-transform:none;letter-spacing:0;">twice this month</span>` : ''}${notThisMonth ? ' · nothing in this month' : ''}</span>`
             : `<span class="datepill nodate">No date set yet</span>`}
           ${(()=>{
             if(listKey !== 'expenses' || !i.date) return '';
-            const nd = nextOccurrenceFromToday(i);
-            if(!nd) return '';
-            const src = incomeNameById(allocateForDate(toDateStr(nd))[i.id]);
+            // Which payment covers it on the date it lands in THIS month.
+            const d = (when instanceof Date) ? when : (occs.length ? occs[0] : nextOccurrenceFromToday(i));
+            if(!d) return '';
+            const src = incomeNameById(allocateForDate(toDateStr(d))[i.id]);
             return src ? `<span class="datepill" style="color:var(--text-soft);">💌 from ${escapeHtml(src)}</span>` : '';
           })()}
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
+          ${occs.length ? tickHtml(paidKeyFor(i, occs[0]), toDateStr(occs[0])) : ''}
           <button class="del cal-jump" data-kind="${listKey}" data-id="${i.id}" title="Go to this date">📅</button>
           <button class="del edit-btn" data-kind="${listKey}" data-id="${i.id}" title="Edit">✏️</button>
           <button class="del" data-kind="${listKey}" data-id="${i.id}" title="Remove">✕</button>
@@ -1326,15 +1419,48 @@ function renderList(kind){
       if(!b.when) return -1;
       return a.when - b.when;
     });
+    // Holiday instalments come out of these payments too, so they belong in
+    // the list, not only in the total.
+    const tripRows = [];
+    state.trips.forEach(t=>(t.payments||[]).forEach(pm=>{
+      if(!pm.date) return;
+      const d = new Date(pm.date+"T00:00:00");
+      if(d < mStart || d > mEnd) return;
+      tripRows.push({
+        tripId: t.id, paymentId: pm.id, tripName: t.name,
+        label: pm.label || 'Payment', amount: Number(pm.amount)||0,
+        when: d, dateStr: pm.date,
+        incId: allocateForDate(pm.date)['trip-'+pm.id] || ''
+      });
+    }));
+
     // One block per payment. A payment with nothing coming out of it still gets
     // a block, so every payment shows what's left of it.
     const groupKeys = [];
     state.incomes.forEach(inc=>{
-      const hasItems = tagged.some(x=>x.incId === inc.id);
+      const hasItems = tagged.some(x=>x.incId === inc.id) || tripRows.some(tr=>tr.incId === inc.id);
       const landsThisMonth = occurrencesInMonth(inc, mStart, mEnd).some(d=>!isSkipped(inc.id, d));
       if(hasItems || landsThisMonth) groupKeys.push(inc.id);
     });
-    if(tagged.some(x=>!x.incId)) groupKeys.push('none');
+    if(tagged.some(x=>!x.incId) || tripRows.some(tr=>!tr.incId)) groupKeys.push('none');
+
+    const tripRowHtml = (tr)=>{
+      const key = 'trip-' + tr.paymentId;
+      const done = isPaidEntry(key, tr.dateStr);
+      return `
+      <div class="item-row${done?' row-paid':''}">
+        <div class="info">
+          <span class="name">${escapeHtml(tr.label)}</span>
+          <span class="freq">${fmt(tr.amount)} · just once</span>
+          <span class="datepill">📅 ${fmtDate(tr.dateStr)}</span>
+          <span class="datepill" style="color:var(--text-soft);">🧳 ${escapeHtml(tr.tripName)} — on your Trips tab</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${tickHtml(key, tr.dateStr)}
+          <button class="del trip-row-jump" data-trip="${tr.tripId}" title="Open this trip">✏️</button>
+        </div>
+      </div>`;
+    };
 
     const groupHtml = (key)=>{
       const incId = key === 'none' ? '' : key;
@@ -1346,15 +1472,8 @@ function renderList(kind){
       const inc = incId ? state.incomes.find(v=>v.id===incId) : null;
       // Holiday instalments come out of these payments too, so they have to
       // count towards what's left - they're just managed on the Trips tab.
-      let tripOut = 0;
-      if(inc){
-        state.trips.forEach(t=>(t.payments||[]).forEach(p=>{
-          if(!p.date) return;
-          const pd = new Date(p.date+"T00:00:00");
-          if(pd < mStart || pd > mEnd) return;
-          if(allocateForDate(p.date)['trip-'+p.id] === incId) tripOut += Number(p.amount)||0;
-        }));
-      }
+      const mineTrips = tripRows.filter(tr=> (tr.incId||'none') === key);
+      const tripOut = mineTrips.reduce((t,tr)=>t+tr.amount, 0);
       // What this payment brings in across the whole month (a 4-weekly one can
       // land twice), so "left" lines up with the month you're viewing.
       const comesIn = inc ? occurrencesInMonth(inc, mStart, mEnd)
@@ -1362,6 +1481,13 @@ function renderList(kind){
         .reduce((s2,d)=>s2+getEffectiveAmount(inc, d), 0) : 0;
       const goesOut = sub + tripOut;
       const leftOver = comesIn - goesOut;
+      const groupTicked =
+        mine.reduce((t,x)=>{
+          if(!x.when) return t;
+          const k = x.item.id + '@' + toDateStr(x.when);
+          return isPaidEntry(k, toDateStr(x.when)) ? t + getEffectiveAmount(x.item, x.when) : t;
+        }, 0)
+        + mineTrips.reduce((t,tr)=> isPaidEntry('trip-'+tr.paymentId, tr.dateStr) ? t + tr.amount : t, 0);
       const nd = inc ? nextOccurrenceFromToday(inc) : null;
       const ndStr = (nd && !isNaN(nd.getTime())) ? toDateStr(nd) : '';
       const adder = !inc ? '' : (listAddingTo === incId ? `
@@ -1401,7 +1527,7 @@ function renderList(kind){
         <div class="cal-month group-head" data-group="${key}" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
           <span style="color:var(--pink-4);">${isOpen?'▲':'▼'}</span>
           ${incName ? '💌 '+escapeHtml(incName) : '📭 Not tied to a payment'}
-          <span class="pill" style="margin-left:auto;text-transform:none;letter-spacing:0;">${mine.length} payment${mine.length===1?'':'s'} · ${fmt(sub)}</span>
+          <span class="pill" style="margin-left:auto;text-transform:none;letter-spacing:0;">${mine.length + mineTrips.length} payment${(mine.length + mineTrips.length)===1?'':'s'} · ${fmt(goesOut)}</span>
         </div>
         ${inc ? `
         <div class="group-left">
@@ -1414,11 +1540,23 @@ function renderList(kind){
             <span>${leftOver < -0.001 ? 'Over by' : 'Left from '+escapeHtml(incName)}</span>
             <b style="color:${leftOver < -0.001 ?'var(--bad)':'var(--good)'};">${fmt(Math.abs(leftOver))}</b>
           </div>
+          ${(mine.length + mineTrips.length) ? `<div class="tick-progress">
+            <span>✓ ${fmt(groupTicked)} has gone out</span>
+            <span><b>${fmt(goesOut - groupTicked)}</b> still to go</span>
+          </div>` : ''}
         </div>` : ''}
         ${isOpen ? adder : ''}`;
       if(!isOpen) return header;
-      const body = mine.length
-        ? mine.map(x=>itemHtml(x.item)).join('')
+      const merged = mine.map(x=>({ when: x.when, html: ()=>itemHtml(x.item, x.when) }))
+        .concat(mineTrips.map(tr=>({ when: tr.when, html: ()=>tripRowHtml(tr) })));
+      merged.sort((a,b)=>{
+        if(!a.when && !b.when) return 0;
+        if(!a.when) return 1;
+        if(!b.when) return -1;
+        return a.when - b.when;
+      });
+      const body = merged.length
+        ? merged.map(m=>m.html()).join('')
         : `<div class="empty" style="padding:8px 0;font-size:0.85rem;">Nothing comes out of this payment in ${monthLabel}</div>`;
       return header + body;
     };
@@ -1435,7 +1573,7 @@ function renderList(kind){
         seenUndated = true;
         header = `<div class="cal-month">📭 No date set yet</div>`;
       }
-      return header + itemHtml(i);
+      return header + itemHtml(i, when);
     }).join('') : `<div class="empty">Nothing lands in ${monthLabel} 🌱</div>`;
   }
 
@@ -1508,9 +1646,11 @@ function renderList(kind){
     });
   });
 
-  el.querySelectorAll('.del:not(.edit-btn):not(.cal-jump)').forEach(btn=>{
+  el.querySelectorAll('.del:not(.edit-btn):not(.cal-jump):not(.paid-tick):not(.trip-row-jump)').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const k = btn.dataset.kind, id = btn.dataset.id;
+      // Only a real delete button carries both of these.
+      if(!k || !id || !Array.isArray(state[k])) return;
       state[k] = state[k].filter(x=>x.id!==id);
       await persist();
     });
@@ -1518,6 +1658,7 @@ function renderList(kind){
 
   el.querySelectorAll('.edit-btn, .edit-name-tap').forEach(btn=>{
     btn.addEventListener('click', ()=>{
+      if(!btn.dataset.kind || !btn.dataset.id) return;
       editingItem = { kind: btn.dataset.kind, id: btn.dataset.id };
       renderList(kind);
     });
@@ -1566,6 +1707,14 @@ function renderList(kind){
     calViewMonth = new Date(n.getFullYear(), n.getMonth(), 1);
     listAdding.income = false; listAdding.outgoings = false; listAddingTo = null;
     renderAll();
+  });
+
+  wirePaidTicks(el);
+  el.querySelectorAll('.trip-row-jump').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      openTripId = b.dataset.trip;
+      document.querySelector('nav.tabs button[data-tab="trips"]').click();
+    });
   });
 
   el.querySelectorAll('.group-head').forEach(h=>{
@@ -1931,7 +2080,9 @@ function fmtDate(d){
 function tripTotals(t){
   const payments = t.payments||[];
   const todayStr = toDateStr(new Date());
-  const isPaidDate = (p)=> !!p.date && p.date <= todayStr;
+  // A payment counts as paid once it's ticked. Until then it falls back to
+  // whether its date has gone by — so ticking moves "Left to pay" here too.
+  const isPaidDate = (p)=> isPaidEntry('trip-'+p.id, p.date);
   const paidAccommodationFromPayments = payments.filter(p=>p.category==='accommodation' && isPaidDate(p)).reduce((s,p)=>s+(Number(p.amount)||0),0);
   const paidSpendingFromPayments = payments.filter(p=>p.category==='spending' && isPaidDate(p)).reduce((s,p)=>s+(Number(p.amount)||0),0);
   const paidOther = payments.filter(p=>(!p.category || p.category==='other') && isPaidDate(p)).reduce((s,p)=>s+(Number(p.amount)||0),0);
@@ -2066,26 +2217,34 @@ function tripCardHtml(t){
   };
   const todayStr = toDateStr(new Date());
   const upcomingHtml = (kind)=>{
+    // Every payment stays listed — ticking one must never make it vanish.
     const list = (t.payments||[])
-      .filter(p=>p.category===kind && p.date && p.date > todayStr)
+      .filter(p=>p.category===kind && p.date)
       .sort((a,b)=>a.date.localeCompare(b.date));
     if(!list.length) return '';
+    const left = list.filter(p=>!isPaidEntry('trip-'+p.id, p.date));
     const key = t.id+'|'+kind+'|up';
     const open = !!tripPanels[key];
-    const total = list.reduce((s,p)=>s+(Number(p.amount)||0),0);
+    const total = left.reduce((s,p)=>s+(Number(p.amount)||0),0);
     return `
       <button class="btn small secondary trip-panel-btn" data-key="${key}" style="margin-top:6px;width:100%;text-align:left;">
-        ${open?'▲':'▼'} 📅 ${list.length} still to pay · ${fmt(total)}
+        ${open?'▲':'▼'} 📅 ${left.length} of ${list.length} still to pay · ${fmt(total)}
       </button>
       ${open ? `<div style="margin-top:4px;">${list.map(p=>{
         const src = sourceLabelFor('trip-'+p.id, p.date);
+        const done = isPaidEntry('trip-'+p.id, p.date);
         return `
-        <div class="mini-row">
+        <div class="mini-row${done?' row-paid':''}">
           <span>
             <span class="mname">${escapeHtml(p.label||'Payment')}</span>
             <span class="mdate">${fmtDate(p.date)}${src?' · from '+escapeHtml(src):' · no payment lands that day'}</span>
           </span>
-          <span class="amt">${fmt(p.amount)}</span>
+          <span style="display:flex;align-items:center;gap:8px;">
+            <span class="amt">${fmt(p.amount)}</span>
+            <button class="paid-tick${done?' is-done':''}" data-key="trip-${p.id}" data-date="${p.date}" title="${done?'Paid — tap to untick':'Not paid yet — tap when it goes out'}">${done?'✓':'○'}</button>
+            <button class="mdel edit-trip-entry-btn" data-trip="${t.id}" data-kind="payments" data-id="${p.id}" title="Edit">✏️</button>
+            <button class="mdel" data-trip="${t.id}" data-payment="${p.id}" title="Delete this payment">✕</button>
+          </span>
         </div>`;
       }).join('')}</div>` : ''}`;
   };
@@ -2233,12 +2392,13 @@ function tripCardHtml(t){
           }
           const catPill = p.category==='accommodation' ? '🏖️' : (p.category==='spending' ? '🎒' : '');
           const source = sourceLabelFor('trip-'+p.id, p.date);
-          const isPaidNow = !!p.date && p.date <= toDateStr(new Date());
+          const isPaidNow = isPaidEntry('trip-'+p.id, p.date);
           const statusPill = p.date ? (isPaidNow ? ' <span class="pill">paid</span>' : ' <span class="pill" style="background:var(--pink-1);color:var(--text-soft);">📅 upcoming</span>') : '';
           return `
-          <div class="mini-row">
+          <div class="mini-row${isPaidNow?' row-paid':''}">
             <span><span class="mname">${catPill?catPill+' ':''}${escapeHtml(p.label||'Payment')}${statusPill}</span>${p.date?`<span class="mdate">${fmtDate(p.date)}${source?' · from '+escapeHtml(source):''}</span>`:''}</span>
             <span style="display:flex;align-items:center;gap:8px;"><span class="amt">${fmt(p.amount)}</span>
+              <button class="paid-tick${isPaidNow?' is-done':''}" data-key="trip-${p.id}" data-date="${p.date||''}" title="${isPaidNow?'Paid — tap to untick':'Not paid yet — tap when it goes out'}">${isPaidNow?'✓':'○'}</button>
               <button class="mdel edit-trip-entry-btn" data-trip="${t.id}" data-kind="payments" data-id="${p.id}" title="Edit">✏️</button>
               <button class="mdel" data-trip="${t.id}" data-payment="${p.id}" title="Remove">✕</button>
             </span>
@@ -2379,7 +2539,7 @@ function wireTripEvents(){
     });
   });
 
-  el.querySelectorAll('.mdel:not(.edit-trip-entry-btn):not(.toggle-itinerary-paid):not(.toggle-section-btn)').forEach(btn=>{
+  el.querySelectorAll('.mdel:not(.edit-trip-entry-btn):not(.toggle-itinerary-paid):not(.toggle-section-btn):not(.paid-tick)').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const tripId = btn.dataset.trip;
       const trip = state.trips.find(x=>x.id===tripId);
@@ -2471,6 +2631,8 @@ function wireTripEvents(){
       await persist();
     });
   });
+
+  wirePaidTicks(el);
 
   el.querySelectorAll('.trip-panel-btn').forEach(btn=>{
     btn.addEventListener('click', (e)=>{
@@ -2788,8 +2950,10 @@ function renderCalendar(){
           <button type="button" class="btn small secondary cancel-edit-month-entry">Cancel</button>
         </form>`;
     }
+    const tickKey = e.isTrip ? ('trip-'+e.paymentId) : (e.itemId + '@' + toDateStr(e.date));
+    const tickDone = tickKey ? isPaidEntry(tickKey, toDateStr(e.date)) : false;
     return `
-      <div class="cal-line">
+      <div class="cal-line${tickDone?' line-paid':''}">
         <span class="cname ${e.isTrip?'cal-name-trip':'cal-name-tap'}"
           ${e.isTrip
             ? `data-trip="${e.tripId}"`
@@ -2798,6 +2962,8 @@ function renderCalendar(){
           title="Tap to change">${escapeHtml(e.name)}${e.hasOverride?' <span class="pill">edited</span>':''}</span>
         <span style="display:flex;align-items:center;gap:6px;">
           <span class="camt ${e.kind}">${e.kind==='income'?'+':'−'}${fmt(e.amount)}</span>
+          ${tickKey ? `<button class="paid-tick${tickDone?' is-done':''}" data-key="${tickKey}" data-date="${toDateStr(e.date)}"
+            title="${e.kind==='income' ? (tickDone?'Arrived — tap to untick':"Hasn't arrived yet — tap when it lands") : (tickDone?'Paid — tap to untick':'Not paid yet — tap when it goes out')}">${tickDone?'✓':'○'}</button>` : ''}
           ${e.isTrip
             ? `<button class="del edit-trip-jump" data-trip="${e.tripId}" title="Manage in Trips">✏️</button>`
             : `<button class="del edit-month-entry-btn" data-item="${e.itemId}" data-date="${toDateStr(e.date)}" data-kind="${e.kind}" title="Edit just this date">✏️</button>`
@@ -2993,15 +3159,15 @@ function renderCalendar(){
   document.getElementById('calPrev').addEventListener('click', ()=>{
     calViewMonth = new Date(calViewMonth.getFullYear(), calViewMonth.getMonth()-1, 1);
     editingMonthEntry = null;
-    renderCalendar();
-    renderOverview();
+    renderAll();
   });
   document.getElementById('calNext').addEventListener('click', ()=>{
     calViewMonth = new Date(calViewMonth.getFullYear(), calViewMonth.getMonth()+1, 1);
     editingMonthEntry = null;
-    renderCalendar();
-    renderOverview();
+    renderAll();
   });
+
+  wirePaidTicks(el);
 
   el.querySelectorAll('.cal-fold').forEach(h=>{
     h.addEventListener('click', ()=>{
