@@ -414,6 +414,7 @@ let searchPaidEditing = false;  // typing a 'paid so far' total in Search
 let listAdding = { income:false, outgoings:false }; // the 'add' form at the top of a list
 let listAddingTo = null;   // income id whose 'add an outgoing to this payment' form is open
 let outgoingGroupOpen = {}; // which payment's outgoings are unfolded on the Outgoings tab
+let listConfirmDelete = null; // {kind, id} waiting on 'are you sure?' before deleting
 let yearOpen = false;         // the whole-year panel on the Overview
 let restoreOffer = null;      // a loaded backup file waiting to be confirmed
 let backupNotice = '';        // a short message after saving or restoring
@@ -432,7 +433,7 @@ function hasOpenEditor(){
     editingTripDetailsId || editingTripPaidFor || editingTripBudgetFor || tripQuickAddFor ||
     editingIncomePaymentFor || editingTiedItem || editingMonthEntry || addingForDateKey || incomeAdding ||
     overviewAdding || searchEditingItemId || searchPaidEditing ||
-    searchConfirm || tripConfirmDelete || restoreOffer ||
+    searchConfirm || tripConfirmDelete || restoreOffer || listConfirmDelete ||
     listAdding.income || listAdding.outgoings || listAddingTo
   );
 }
@@ -1368,6 +1369,22 @@ function renderList(kind){
     }
     const expandable = kind === 'income';
     const isExpanded = expandable && expandedIncomeId === i.id;
+    if(listConfirmDelete && listConfirmDelete.kind === listKey && listConfirmDelete.id === i.id){
+      const occCount = i.date && i.frequency !== 'oneoff' ? 'every date it appears on' : 'this one payment';
+      return `
+      <div class="confirm-box" style="margin:8px 0;">
+        <div class="confirm-text">
+          Delete <b>${escapeHtml(i.name)}</b> (${fmt(i.amount)} · ${freqLabel(i.frequency)})?<br>
+          This removes ${occCount}, past and future.
+          ${listKey === 'incomes' ? '<br>Anything coming out of it will be shared across your other payments instead.' : ''}
+          <br><span style="color:var(--text-soft);">You can take it back with the ↩️ Undo button afterwards.</span>
+        </div>
+        <div class="row-btns">
+          <button class="btn small list-del-yes" data-kind="${listKey}" data-id="${i.id}" style="flex:1;background:var(--bad);box-shadow:none;">Yes, delete it</button>
+          <button class="btn small secondary list-del-no" style="flex:1;">Cancel</button>
+        </div>
+      </div>`;
+    }
     const rowDone = occs.length && isPaidEntry(paidKeyFor(i, occs[0]), toDateStr(occs[0]));
     const rowHtml = `
       <div class="item-row${rowDone?' row-paid':''}">
@@ -1647,9 +1664,22 @@ function renderList(kind){
   });
 
   el.querySelectorAll('.del:not(.edit-btn):not(.cal-jump):not(.paid-tick):not(.trip-row-jump)').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
+    btn.addEventListener('click', ()=>{
       const k = btn.dataset.kind, id = btn.dataset.id;
       // Only a real delete button carries both of these.
+      if(!k || !id || !Array.isArray(state[k])) return;
+      // Ask first — one stray tap used to wipe a whole payment and its history.
+      listConfirmDelete = { kind: k, id: id };
+      renderList(kind);
+    });
+  });
+  el.querySelectorAll('.list-del-no').forEach(b=>{
+    b.addEventListener('click', ()=>{ listConfirmDelete = null; renderList(kind); });
+  });
+  el.querySelectorAll('.list-del-yes').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      const k = b.dataset.kind, id = b.dataset.id;
+      listConfirmDelete = null;
       if(!k || !id || !Array.isArray(state[k])) return;
       state[k] = state[k].filter(x=>x.id!==id);
       await persist();
