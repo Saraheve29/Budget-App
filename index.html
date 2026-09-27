@@ -1543,9 +1543,13 @@ function renderList(kind){
       const header = `
         <div class="cal-month group-head" data-group="${key}" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
           <span style="color:var(--pink-4);">${isOpen?'▲':'▼'}</span>
-          ${incName ? '💌 '+escapeHtml(incName) : '📭 Not tied to a payment'}
+          ${incName ? '💌 '+escapeHtml(incName) : '📭 Nothing comes in on these dates'}
           <span class="pill" style="margin-left:auto;text-transform:none;letter-spacing:0;">${mine.length + mineTrips.length} payment${(mine.length + mineTrips.length)===1?'':'s'} · ${fmt(goesOut)}</span>
         </div>
+        ${!inc && isOpen ? `<div class="disclaimer" style="margin:-2px 0 10px;">
+          These go out on dates when no money comes in, so they aren't taken off any payment.
+          Usually that means a payment is missing — add it on the Income tab with the right date and these will move under it on their own.
+        </div>` : ''}
         ${inc ? `
         <div class="group-left">
           <div class="group-left-sums">
