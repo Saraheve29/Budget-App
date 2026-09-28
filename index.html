@@ -250,6 +250,10 @@
   .search-date{ font-size:0.72rem; color:var(--text-soft); margin-right:8px; }
 
   .group-head:active{ opacity:0.7; }
+  .group-when{
+    font-size:0.76rem; font-weight:700; color:var(--pink-5);
+    margin:-4px 0 6px 2px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+  }
   .today-line{
     display:flex; align-items:center; gap:8px;
     margin: 4px 0 12px; color:var(--pink-5); font-weight:800; font-size:0.78rem;
@@ -415,6 +419,7 @@ let listAdding = { income:false, outgoings:false }; // the 'add' form at the top
 let listAddingTo = null;   // income id whose 'add an outgoing to this payment' form is open
 let outgoingGroupOpen = {}; // which payment's outgoings are unfolded on the Outgoings tab
 let listConfirmDelete = null; // {kind, id} waiting on 'are you sure?' before deleting
+let tiedConfirmDelete = null; // key of a row inside a payment waiting on 'are you sure?'
 let yearOpen = false;         // the whole-year panel on the Overview
 let restoreOffer = null;      // a loaded backup file waiting to be confirmed
 let backupNotice = '';        // a short message after saving or restoring
@@ -433,7 +438,7 @@ function hasOpenEditor(){
     editingTripDetailsId || editingTripPaidFor || editingTripBudgetFor || tripQuickAddFor ||
     editingIncomePaymentFor || editingTiedItem || editingMonthEntry || addingForDateKey || incomeAdding ||
     overviewAdding || searchEditingItemId || searchPaidEditing ||
-    searchConfirm || tripConfirmDelete || restoreOffer || listConfirmDelete ||
+    searchConfirm || tripConfirmDelete || restoreOffer || listConfirmDelete || tiedConfirmDelete ||
     listAdding.income || listAdding.outgoings || listAddingTo
   );
 }
@@ -1129,7 +1134,7 @@ function renderIncomeExpansion(item){
   const alloc = allocateForDate(viewDateStr);
   state.expenses.forEach(x=>{
     if(occursOnDate(x, viewDateStr) && !isSkipped(x.id, viewDate) && alloc[x.id] === item.id){
-      tied.push({ itemId:x.id, name:x.name, amount:getEffectiveAmount(x, viewDate), recurring:x.frequency!=='oneoff' });
+      tied.push({ itemId:x.id, name:x.name, amount:getEffectiveAmount(x, viewDate), recurring:x.frequency!=='oneoff', frequency:x.frequency });
     }
   });
   state.trips.forEach(t=>{
@@ -1165,6 +1170,37 @@ function renderIncomeExpansion(item){
 
   const tiedHtml = tied.length ? tied.map(x=>{
     const editKey = x.isTrip ? ('trip-'+x.paymentId) : x.itemId;
+    if(tiedConfirmDelete === editKey){
+      if(x.isTrip){
+        return `
+        <div class="confirm-box">
+          <div class="confirm-text">Delete <b>${escapeHtml(x.name)}</b> (${fmt(x.amount)}) from your Trips tab?</div>
+          <div class="row-btns">
+            <button class="btn small tied-del-trip-yes" data-trip="${x.tripId}" data-payment="${x.paymentId}" style="flex:1;background:var(--bad);box-shadow:none;">Yes, delete it</button>
+            <button class="btn small secondary tied-del-no" style="flex:1;">Cancel</button>
+          </div>
+        </div>`;
+      }
+      if(x.recurring){
+        return `
+        <div class="confirm-box">
+          <div class="confirm-text"><b>${escapeHtml(x.name)}</b> (${fmt(x.amount)}) happens ${freqLabel(x.frequency)}. What do you want to do?</div>
+          <div class="row-btns" style="flex-wrap:wrap;">
+            <button class="btn small secondary tied-skip-yes" data-item="${x.itemId}" data-date="${viewDateStr}" style="flex:1 0 100%;">Take it off ${fmtDate(viewDateStr)} only</button>
+            <button class="btn small tied-del-all-yes" data-item="${x.itemId}" style="flex:1;background:var(--bad);box-shadow:none;">Delete it everywhere</button>
+            <button class="btn small secondary tied-del-no" style="flex:1;">Cancel</button>
+          </div>
+        </div>`;
+      }
+      return `
+      <div class="confirm-box">
+        <div class="confirm-text">Delete <b>${escapeHtml(x.name)}</b> (${fmt(x.amount)})? It only happens once, so this removes it completely.</div>
+        <div class="row-btns">
+          <button class="btn small tied-del-all-yes" data-item="${x.itemId}" style="flex:1;background:var(--bad);box-shadow:none;">Yes, delete it</button>
+          <button class="btn small secondary tied-del-no" style="flex:1;">Cancel</button>
+        </div>
+      </div>`;
+    }
     if(editingTiedItem === editKey){
       if(x.isTrip){
         return `
@@ -1178,35 +1214,47 @@ function renderIncomeExpansion(item){
       if(x.recurring){
         return `
           <form class="miniform edit-tied-override-form" data-item="${x.itemId}">
-            <span style="flex:1 0 100%;font-size:0.76rem;color:var(--text-soft);">Renaming changes it everywhere · the amount changes just this date</span>
+            <span style="flex:1 0 100%;font-size:0.76rem;color:var(--text-soft);">The name and how often it happens change everywhere · the amount changes just this date</span>
             <input type="text" name="name" value="${escapeHtml(x.name)}" required style="flex:2;min-width:120px;">
             <input type="number" name="amount" value="${x.amount}" step="0.01" min="0" required style="flex:1;min-width:90px;">
+            <select name="frequency" style="flex:1 0 100%;">
+              <option value="monthly" ${x.frequency==='monthly'?'selected':''}>Every month</option>
+              <option value="fourweekly" ${x.frequency==='fourweekly'?'selected':''}>Every 4 weeks</option>
+              <option value="weekly" ${x.frequency==='weekly'?'selected':''}>Every week</option>
+              <option value="oneoff">Just once</option>
+            </select>
             <button type="submit" class="btn small">Save</button>
             <button type="button" class="btn small secondary cancel-edit-tied">Cancel</button>
           </form>`;
       }
       return `
         <form class="miniform edit-tied-oneoff-form" data-item="${x.itemId}">
+          <span style="flex:1 0 100%;font-size:0.76rem;color:var(--text-soft);">Set this to repeat and it will keep coming back from this date on</span>
           <input type="text" name="name" value="${escapeHtml(x.name)}" required>
           <input type="number" name="amount" value="${x.amount}" step="0.01" min="0" required>
+          <select name="frequency" style="flex:1 0 100%;">
+            <option value="oneoff" selected>Just once</option>
+            <option value="monthly">Every month</option>
+            <option value="fourweekly">Every 4 weeks</option>
+            <option value="weekly">Every week</option>
+          </select>
           <button type="submit" class="btn small">Save</button>
           <button type="button" class="btn small secondary cancel-edit-tied">Cancel</button>
         </form>`;
     }
-    const delBtn = x.isTrip
-      ? `<button class="del inc-del-trip" data-trip="${x.tripId}" data-payment="${x.paymentId}" title="Remove">✕</button>`
-      : (x.recurring
-          ? `<button class="del inc-skip" data-item="${x.itemId}" data-date="${viewDateStr}" title="Remove just from this date">✕</button>`
-          : `<button class="del inc-del-oneoff" data-item="${x.itemId}" title="Delete">✕</button>`);
+    const delBtn = `<button class="del tied-del-btn" data-key="${editKey}" title="Remove or delete">✕</button>`;
     const editBtn = `<button class="del edit-tied-btn" data-key="${editKey}" title="Edit">✏️</button>`;
     const tKey = x.isTrip ? ('trip-'+x.paymentId) : (x.itemId + '@' + viewDateStr);
     const tDone = isPaidEntry(tKey, viewDateStr);
+    // Two of the same name on the same day is nearly always an accident.
+    const dupeFlag = tied.filter(y=>y.name === x.name).length > 1
+      ? ' <span class="pill" style="background:var(--warn);color:#fff;text-transform:none;letter-spacing:0;">same name twice</span>' : '';
     return `
       <div class="cal-line${tDone?' line-paid':''}">
         <span class="cname tied-name-tap" data-key="${editKey}"
           style="cursor:pointer;text-decoration:underline dotted var(--pink-3);text-underline-offset:3px;"
           title="Tap to change">${escapeHtml(x.name)}
-          <span class="mdate">📅 ${fmtDate(viewDateStr)}${x.isTrip?' · on your Trips tab':''}</span>
+          <span class="mdate">${x.isTrip ? '🧳 on your Trips tab' : (x.recurring ? '🔁 '+freqLabel(x.frequency) : '1️⃣ just once')} · 📅 ${fmtDate(viewDateStr)}${dupeFlag}</span>
         </span>
         <span style="display:flex;align-items:center;gap:6px;">
           <span class="camt expense">−${fmt(x.amount)}</span>
@@ -1459,6 +1507,16 @@ function renderList(kind){
       const landsThisMonth = occurrencesInMonth(inc, mStart, mEnd).some(d=>!isSkipped(inc.id, d));
       if(hasItems || landsThisMonth) groupKeys.push(inc.id);
     });
+    // Put the payments in the order they land, so the page reads like the
+    // month does: earliest at the top.
+    const firstLanding = id=>{
+      const inc = state.incomes.find(v=>v.id===id);
+      const ds = inc ? occurrencesInMonth(inc, mStart, mEnd).filter(d=>!isSkipped(inc.id, d)) : [];
+      return ds.length ? ds[0].getTime() : Infinity;
+    };
+    const incOrder = {};
+    state.incomes.forEach((inc,ix)=>{ incOrder[inc.id] = ix; });
+    groupKeys.sort((a,b)=> (firstLanding(a) - firstLanding(b)) || (incOrder[a] - incOrder[b]));
     if(tagged.some(x=>!x.incId) || tripRows.some(tr=>!tr.incId)) groupKeys.push('none');
 
     const tripRowHtml = (tr)=>{
@@ -1493,9 +1551,18 @@ function renderList(kind){
       const tripOut = mineTrips.reduce((t,tr)=>t+tr.amount, 0);
       // What this payment brings in across the whole month (a 4-weekly one can
       // land twice), so "left" lines up with the month you're viewing.
-      const comesIn = inc ? occurrencesInMonth(inc, mStart, mEnd)
-        .filter(d=>!isSkipped(inc.id, d))
-        .reduce((s2,d)=>s2+getEffectiveAmount(inc, d), 0) : 0;
+      const incDates = inc ? occurrencesInMonth(inc, mStart, mEnd).filter(d=>!isSkipped(inc.id, d)) : [];
+      const comesIn = incDates.reduce((s2,d)=>s2+getEffectiveAmount(inc, d), 0);
+      const shortDate = d => d.toLocaleDateString('en-GB', {day:'numeric', month:'short'});
+      const whenLine = incDates.length ? incDates.map(shortDate).join('  and  ') : '';
+      // When a payment lands more than once, show the sum rather than a total
+      // that looks like a single payment.
+      const inSums = incDates.map(d=>getEffectiveAmount(inc, d));
+      const allSame = inSums.every(v=>Math.abs(v-inSums[0])<0.005);
+      const inText = incDates.length > 1
+        ? (allSame ? `${fmt(inSums[0])} × ${incDates.length} = ${fmt(comesIn)} in`
+                   : `${inSums.map(v=>fmt(v)).join(' + ')} = ${fmt(comesIn)} in`)
+        : `${fmt(comesIn)} in`;
       const goesOut = sub + tripOut;
       const leftOver = comesIn - goesOut;
       const groupTicked =
@@ -1544,8 +1611,9 @@ function renderList(kind){
         <div class="cal-month group-head" data-group="${key}" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
           <span style="color:var(--pink-4);">${isOpen?'▲':'▼'}</span>
           ${incName ? '💌 '+escapeHtml(incName) : '📭 Nothing comes in on these dates'}
-          <span class="pill" style="margin-left:auto;text-transform:none;letter-spacing:0;">${mine.length + mineTrips.length} payment${(mine.length + mineTrips.length)===1?'':'s'} · ${fmt(goesOut)}</span>
+          <span class="pill" style="margin-left:auto;text-transform:none;letter-spacing:0;">${mine.length + mineTrips.length} going out · ${fmt(goesOut)}</span>
         </div>
+        ${whenLine ? `<div class="group-when">📅 ${whenLine}${incDates.length>1?` <span class="pill" style="text-transform:none;letter-spacing:0;">lands ${incDates.length === 2 ? 'twice' : incDates.length+' times'} this month</span>`:''}</div>` : ''}
         ${!inc && isOpen ? `<div class="disclaimer" style="margin:-2px 0 10px;">
           These go out on dates when no money comes in, so they aren't taken off any payment.
           Usually that means a payment is missing — add it on the Income tab with the right date and these will move under it on their own.
@@ -1553,12 +1621,12 @@ function renderList(kind){
         ${inc ? `
         <div class="group-left">
           <div class="group-left-sums">
-            <span>${fmt(comesIn)} in</span>
+            <span>${inText}</span>
             <span>−</span>
             <span>${fmt(goesOut)} out${tripOut>0.001?` <i>(incl. ${fmt(tripOut)} holiday)</i>`:''}</span>
           </div>
           <div class="group-left-total">
-            <span>${leftOver < -0.001 ? 'Over by' : 'Left from '+escapeHtml(incName)}</span>
+            <span>${leftOver < -0.001 ? 'Over by, across all of '+monthLabel.split(' ')[0] : 'Left from '+escapeHtml(incName)+' across '+monthLabel.split(' ')[0]}</span>
             <b style="color:${leftOver < -0.001 ?'var(--bad)':'var(--good)'};">${fmt(Math.abs(leftOver))}</b>
           </div>
           ${(mine.length + mineTrips.length) ? `<div class="tick-progress">
@@ -1833,22 +1901,31 @@ function renderList(kind){
         renderList('income');
       });
     });
-    el.querySelectorAll('.inc-skip').forEach(btn=>{
+    el.querySelectorAll('.tied-del-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=>{ tiedConfirmDelete = btn.dataset.key; renderList('income'); });
+    });
+    el.querySelectorAll('.tied-del-no').forEach(btn=>{
+      btn.addEventListener('click', ()=>{ tiedConfirmDelete = null; renderList('income'); });
+    });
+    el.querySelectorAll('.tied-skip-yes').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
+        tiedConfirmDelete = null;
         const key = overrideKey(btn.dataset.item, new Date(btn.dataset.date+"T00:00:00"));
         state.skips = state.skips || {};
         state.skips[key] = true;
         await persist();
       });
     });
-    el.querySelectorAll('.inc-del-oneoff').forEach(btn=>{
+    el.querySelectorAll('.tied-del-all-yes').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
+        tiedConfirmDelete = null;
         state.expenses = state.expenses.filter(x=>x.id!==btn.dataset.item);
         await persist();
       });
     });
-    el.querySelectorAll('.inc-del-trip').forEach(btn=>{
+    el.querySelectorAll('.tied-del-trip-yes').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
+        tiedConfirmDelete = null;
         const trip = state.trips.find(x=>x.id===btn.dataset.trip);
         if(trip) trip.payments = (trip.payments||[]).filter(p=>p.id!==btn.dataset.payment);
         await persist();
@@ -1935,6 +2012,20 @@ function renderList(kind){
         if(isNaN(amount)) return;
         const newName = (fd4.get('name')||'').trim();
         if(newName) x.name = newName;
+        const newFreq = fd4.get('frequency');
+        if(newFreq && newFreq !== x.frequency){
+          x.frequency = newFreq;
+          if(newFreq === 'oneoff'){
+            // It only happens on the date you're looking at now.
+            x.date = viewDateStr2;
+            x.amount = amount;
+            delete x.endDate;
+            if(state.overrides) delete state.overrides[overrideKey(x.id, viewDate2)];
+            editingTiedItem = null;
+            await persist();
+            return;
+          }
+        }
         state.overrides = state.overrides || {};
         state.overrides[overrideKey(x.id, viewDate2)] = amount;
         editingTiedItem = null;
@@ -1952,6 +2043,17 @@ function renderList(kind){
         if(!name || isNaN(amount)) return;
         x.name = name;
         x.amount = amount;
+        const freq5 = fd5.get('frequency');
+        if(freq5 && freq5 !== x.frequency){
+          x.frequency = freq5;
+          // It starts repeating from the date you're looking at.
+          const incomeItem5 = state.incomes.find(v=>v.id===expandedIncomeId);
+          if(incomeItem5){
+            const nd5 = nextOccurrenceFromToday(incomeItem5);
+            x.date = incomeViewDate[incomeItem5.id] || (nd5 ? toDateStr(nd5) : incomeItem5.date);
+          }
+          delete x.endDate;
+        }
         editingTiedItem = null;
         await persist();
       });
