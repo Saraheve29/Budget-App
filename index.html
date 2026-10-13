@@ -250,6 +250,22 @@
   .search-date{ font-size:0.72rem; color:var(--text-soft); margin-right:8px; }
 
   .group-head:active{ opacity:0.7; }
+  .np-card{ text-align:center; background: linear-gradient(150deg, var(--card), var(--pink-1)); border:1.5px solid var(--pink-3); }
+  .np-count{ display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .np-big{ font-family:var(--font-head); font-weight:700; font-size:3.4rem; line-height:1; color:var(--pink-5); }
+  .np-words{ font-family:var(--font-head); font-weight:700; font-size:1.02rem; color:var(--deep); }
+  .np-date{ margin-top:8px; font-size:0.86rem; font-weight:700; color:var(--text-soft); }
+  .np-list{ margin:12px auto 0; max-width:340px; text-align:left; }
+  .np-row{ display:flex; justify-content:space-between; gap:10px; padding:6px 2px; border-top:1px dashed var(--border); font-size:0.9rem; }
+  .np-row b{ font-family:var(--font-head); color:var(--good); }
+  .np-total{ font-weight:800; }
+  .np-after{ margin-top:10px; font-size:0.78rem; color:var(--text-soft); }
+  .np-trip{ margin-top:8px; font-family:var(--font-head); font-weight:700; font-size:1.05rem; color:var(--pink-5); }
+  .trip-when{ display:inline-block; font-size:0.74rem; font-weight:800; padding:3px 10px; border-radius:999px;
+    background:var(--pink-2); color:var(--pink-5); }
+  .trip-when-now{ background:var(--good); color:#fff; }
+  .trip-when-past{ background:var(--pink-1); color:var(--text-soft); }
+  .trip-when-none{ background:var(--pink-1); color:var(--warn); }
   .group-when{
     font-size:0.76rem; font-weight:700; color:var(--pink-5);
     margin:-4px 0 6px 2px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;
@@ -789,6 +805,74 @@ function yearRows(){
   return rows;
 }
 
+// The next day money lands, counted from today (not the month being viewed).
+// Returns { days, date, items:[{name, amount}], total, after:{...}|null }.
+function nextPaymentDays(){
+  const today = new Date(); today.setHours(0,0,0,0);
+  const upcoming = [];
+  state.incomes.forEach(inc=>{
+    if(!inc.date) return;
+    let d = new Date(inc.date + "T00:00:00");
+    if(isNaN(d.getTime())) return;
+    let guard = 0;
+    // walk forward to the first date on or after today that isn't skipped
+    while(guard < 400){
+      if(inc.endDate && toDateStr(d) > inc.endDate) return;
+      if(d >= today && !isSkipped(inc.id, d)){
+        upcoming.push({ date: new Date(d), name: inc.name, amount: getEffectiveAmount(inc, d) });
+        // and the one after it, for the "after that" line
+        let d2 = addInterval(d, inc.frequency), g2 = 0;
+        while(inc.frequency !== 'oneoff' && g2 < 60){
+          if(inc.endDate && toDateStr(d2) > inc.endDate) break;
+          if(!isSkipped(inc.id, d2)){ upcoming.push({ date: new Date(d2), name: inc.name, amount: getEffectiveAmount(inc, d2) }); break; }
+          d2 = addInterval(d2, inc.frequency); g2++;
+        }
+        return;
+      }
+      if(inc.frequency === 'oneoff') return;
+      d = addInterval(d, inc.frequency); guard++;
+    }
+  });
+  if(!upcoming.length) return null;
+  upcoming.sort((a,b)=> a.date - b.date);
+  const dayGroup = (start)=>{
+    const key = toDateStr(start.date);
+    const items = upcoming.filter(u=> toDateStr(u.date) === key);
+    return {
+      date: start.date,
+      days: Math.round((start.date - today) / 86400000),
+      items, total: items.reduce((t,u)=>t+u.amount, 0)
+    };
+  };
+  const first = dayGroup(upcoming[0]);
+  const nextOne = upcoming.find(u=> toDateStr(u.date) !== toDateStr(first.date));
+  first.after = nextOne ? dayGroup(nextOne) : null;
+  return first;
+}
+
+function nextPaymentHtml(){
+  const np = nextPaymentDays();
+  if(!np) return '';
+  const longDate = d => d.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'long'});
+  const big = np.days === 0 ? 'Today' : String(np.days);
+  const words = np.days === 0 ? 'is payment day 🎉'
+              : np.days === 1 ? 'day until your next payment'
+              : 'days until your next payment';
+  const who = np.items.map(u=>`<div class="np-row"><span>💌 ${escapeHtml(u.name)}</span><b>${fmt(u.amount)}</b></div>`).join('');
+  const after = np.after
+    ? `<div class="np-after">After that: <b>${np.after.items.map(u=>escapeHtml(u.name)).join(' & ')}</b> on ${np.after.date.toLocaleDateString('en-GB',{weekday:'short', day:'numeric', month:'short'})} · ${np.after.days} day${np.after.days===1?'':'s'} away</div>`
+    : '';
+  return `
+    <div class="card np-card">
+      <div class="np-count"><span class="np-big">${big}</span><span class="np-words">${words}</span></div>
+      <div class="np-date">📅 ${longDate(np.date)}</div>
+      <div class="np-list">${who}
+        ${np.items.length > 1 ? `<div class="np-row np-total"><span>Together</span><b>${fmt(np.total)}</b></div>` : ''}
+      </div>
+      ${after}
+    </div>`;
+}
+
 function renderOverview(){
   // Shares its month with the Calendar tab, so stepping forward here and then
   // opening the Calendar lands you on the same month.
@@ -800,6 +884,7 @@ function renderOverview(){
   const {incMonthly, expMonthly, remaining} = totals(monthStart);
   const el = document.getElementById('tab-overview');
   el.innerHTML = `
+    ${nextPaymentHtml()}
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;">
         <button class="btn small secondary" id="ovPrev">← Prev</button>
@@ -2238,10 +2323,73 @@ function tripTotals(t){
   return { paid, paidAccommodation, paidSpending, paidOther, paidAccommodationFromPayments, paidSpendingFromPayments, scheduledAccommodationFromPayments, scheduledSpendingFromPayments, itineraryCost, itineraryPaid, accommodationBudget, spendingBudget, budget, remaining };
 }
 
+// Where a trip sits relative to today.
+function tripTiming(t){
+  if(!t.startDate) return { kind:'nodate' };
+  const today = new Date(); today.setHours(0,0,0,0);
+  const start = new Date(t.startDate + "T00:00:00");
+  const end = t.endDate ? new Date(t.endDate + "T00:00:00") : start;
+  if(isNaN(start.getTime())) return { kind:'nodate' };
+  const day = 86400000;
+  const nights = Math.max(0, Math.round((end - start) / day));
+  if(today < start){
+    return { kind:'ahead', days: Math.round((start - today) / day), nights, start, end };
+  }
+  if(today <= end){
+    return { kind:'now', dayNo: Math.round((today - start) / day) + 1, totalDays: nights + 1,
+             leftDays: Math.round((end - today) / day), start, end };
+  }
+  return { kind:'past', start, end };
+}
+
+function tripTimingPill(t){
+  const tt = tripTiming(t);
+  if(tt.kind === 'nodate') return `<span class="trip-when trip-when-none">📅 No dates set yet</span>`;
+  if(tt.kind === 'now')    return `<span class="trip-when trip-when-now">🌴 On now · day ${tt.dayNo} of ${tt.totalDays}</span>`;
+  if(tt.kind === 'past')   return `<span class="trip-when trip-when-past">✓ Been</span>`;
+  const big = tt.days === 0 ? 'Today!' : tt.days === 1 ? 'Tomorrow!' : `${tt.days} days to go`;
+  return `<span class="trip-when">⏳ ${big}${tt.nights ? ` · ${tt.nights} night${tt.nights===1?'':'s'}` : ''}</span>`;
+}
+
+// The big countdown at the top of the Trips tab.
+function nextTripHtml(){
+  const timed = state.trips.map(t=>({ t, tt: tripTiming(t) }));
+  const onNow = timed.find(x=>x.tt.kind === 'now');
+  const ahead = timed.filter(x=>x.tt.kind === 'ahead').sort((a,b)=> a.tt.days - b.tt.days);
+  const shortD = d => d.toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'});
+  const longD  = d => d.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
+  let top = '', after = null;
+  if(onNow){
+    const tt = onNow.tt;
+    top = `
+      <div class="np-count"><span class="np-big">🌴</span>
+        <span class="np-words">You're on holiday!</span></div>
+      <div class="np-trip">${escapeHtml(onNow.t.name)}</div>
+      <div class="np-date">Day ${tt.dayNo} of ${tt.totalDays} · ${tt.leftDays === 0 ? 'last day today' : tt.leftDays+' day'+(tt.leftDays===1?'':'s')+' left'}</div>`;
+    after = ahead[0] || null;
+  } else if(ahead.length){
+    const n = ahead[0], tt = n.tt;
+    const big = tt.days === 0 ? 'Today' : String(tt.days);
+    const words = tt.days === 0 ? 'is holiday day! 🎉' : tt.days === 1 ? 'day until your next holiday' : 'days until your next holiday';
+    top = `
+      <div class="np-count"><span class="np-big">${big}</span><span class="np-words">${words}</span></div>
+      <div class="np-trip">${escapeHtml(n.t.name)}</div>
+      <div class="np-date">📅 ${longD(tt.start)}${tt.nights ? ` · ${tt.nights} night${tt.nights===1?'':'s'}` : ''}</div>`;
+    after = ahead[1] || null;
+  } else {
+    return '';
+  }
+  const afterHtml = after
+    ? `<div class="np-after">After that: <b>${escapeHtml(after.t.name)}</b> on ${shortD(after.tt.start)} · ${after.tt.days} day${after.tt.days===1?'':'s'} away</div>`
+    : '';
+  return `<div class="card np-card">${top}${afterHtml}</div>`;
+}
+
 function renderTrips(){
   const el = document.getElementById('tab-trips');
   const trips = state.trips;
   el.innerHTML = `
+    ${nextTripHtml()}
     <div class="card">
       <h2>🧳 Trips &amp; holidays</h2>
       <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-6px;">Plan the money and the days out together — payments here can flow straight into your outgoings.</p>
@@ -2464,6 +2612,7 @@ function tripCardHtml(t){
           <div class="tname">${escapeHtml(t.name)}</div>
           ${t.destination ? `<div class="tdest">${escapeHtml(t.destination)}</div>`:''}
           ${dateRange ? `<div class="tdates">${dateRange}</div>`:''}
+          <div style="margin-top:5px;">${tripTimingPill(t)}</div>
         </div>
         <span style="display:flex;align-items:center;gap:8px;">
           <button class="del edit-trip-details-btn" data-trip="${t.id}" title="Edit trip details">✏️</button>
