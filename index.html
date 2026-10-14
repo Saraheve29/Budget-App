@@ -1003,10 +1003,17 @@ function renderOverview(){
           </select>
         </div>
         <div>
-          <label>Date within ${monthLabel}</label>
-          <input type="date" name="date" min="${toDateStr(monthStart)}" max="${toDateStr(monthEnd)}" value="${toDateStr(monthStart)}" required>
+          <label>Date (any month)</label>
+          <input type="date" name="date" value="${toDateStr(monthStart)}" required>
         </div>
-        <button type="submit" class="btn">Add to ${monthLabel} 🩷</button>
+        <div>
+          <label>Comes out of (outgoings only)</label>
+          <select name="fromIncome">
+            <option value="">Let the app decide</option>
+            ${state.incomes.map(i=>`<option value="${i.id}">${escapeHtml(i.name)}</option>`).join('')}
+          </select>
+        </div>
+        <button type="submit" class="btn">Add it 🩷</button>
       </form>`:''}
       ${usingLocalFallback ? `<div class="disclaimer">Saved on this device only right now — open this page the same way each time to keep your data.</div>`:''}
       ${saveFailedNotice ? `<div class="disclaimer" style="color:var(--bad);font-weight:700;">⚠️ Your last change couldn't reach the cloud, so it's only saved on this device for now. Try again with a good connection when you can.</div>`:''}
@@ -1127,8 +1134,13 @@ function renderOverview(){
       const date = fd.get('date');
       if(!name || isNaN(amount) || !date) return;
       const entry = { id: uid(), name, amount, frequency: fd.get('frequency') || 'oneoff', date };
+      const pick1 = fd.get('fromIncome');
+      if(!isIncome && pick1) entry.fromIncome = pick1;
       state[isIncome ? 'incomes' : 'expenses'].push(entry);
       overviewAdding = false;
+      // Show the month it actually went into, so it's visibly there.
+      const dd = new Date(date + "T00:00:00");
+      calViewMonth = new Date(dd.getFullYear(), dd.getMonth(), 1);
       await persist();
     });
   }
@@ -3494,7 +3506,7 @@ function renderCalendar(){
       ${entries.length ? groupBlocksHtml : `<div class="empty">Nothing lands in ${monthLabel} yet — add a "next payment date" to your income/outgoings, or add an extra just for this month below 🌱</div>`}
     </div>
     <div class="card">
-      <h2>➕ Add an extra just for ${monthLabel}</h2>
+      <h2>➕ Add a one-off payment</h2>
       <form class="addform" id="monthExtraForm">
         <div>
           <label>What's it called?</label>
@@ -3512,10 +3524,17 @@ function renderCalendar(){
           </select>
         </div>
         <div>
-          <label>Date within ${monthLabel}</label>
-          <input type="date" name="date" min="${toDateStr(monthStart)}" max="${toDateStr(monthEnd)}" value="${toDateStr(monthStart)}" required>
+          <label>Date (any month)</label>
+          <input type="date" name="date" value="${toDateStr(monthStart)}" required>
         </div>
-        <button type="submit" class="btn">Add to this month 🩷</button>
+        <div>
+          <label>Comes out of (outgoings only)</label>
+          <select name="fromIncome">
+            <option value="">Let the app decide</option>
+            ${state.incomes.map(i=>`<option value="${i.id}">${escapeHtml(i.name)}</option>`).join('')}
+          </select>
+        </div>
+        <button type="submit" class="btn">Add it 🩷</button>
       </form>
     </div>
   `;
@@ -3659,8 +3678,13 @@ function renderCalendar(){
     const kindKey = fd.get('kind') === 'income' ? 'incomes' : 'expenses';
     const date = fd.get('date');
     if(!name || isNaN(amount) || !date) return;
-    state[kindKey].push({ id: uid(), name, amount, frequency: 'oneoff', date });
+    const entry2 = { id: uid(), name, amount, frequency: 'oneoff', date };
+    const pick2 = fd.get('fromIncome');
+    if(kindKey === 'expenses' && pick2) entry2.fromIncome = pick2;
+    state[kindKey].push(entry2);
     extraForm.reset();
+    const dd2 = new Date(date + "T00:00:00");
+    calViewMonth = new Date(dd2.getFullYear(), dd2.getMonth(), 1);
     await persist();
   });
 }
