@@ -268,6 +268,8 @@
     font-size:0.78rem; font-weight:700; padding:5px 12px; border-radius:999px; cursor:pointer; }
   .daily-edit{ margin-top:8px; display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; font-size:0.85rem; }
   .daily-edit input{ width:80px; padding:7px 9px; border-radius:10px; border:1.5px solid var(--border); background:var(--pink-1); color:var(--text); }
+  .app-version{ text-align:center; font-size:0.7rem; color:var(--text-soft); margin:2px 0 10px; }
+  .daily-links{ display:flex; justify-content:center; gap:14px; }
   .daily-toggle{ display:block; margin:8px auto 0; border:none; background:none; color:var(--pink-4);
     font-size:0.76rem; font-weight:700; cursor:pointer; }
   .np-trip{ margin-top:8px; font-family:var(--font-head); font-weight:700; font-size:1.05rem; color:var(--pink-5); }
@@ -882,22 +884,25 @@ function dailyMoneyHtml(days){
   const total = per * days;
   const open = dailyOpen();
   if(!open){
-    return `<button class="daily-toggle" id="dailyToggle">▼ 💷 Show daily money</button>`;
+    return `<button class="daily-toggle" id="dailyToggle">▼ 💷 Show money left</button>`;
   }
   const amountBit = editingDaily
     ? `<form class="daily-edit" id="dailyForm">
          <span>£</span><input type="number" name="daily" value="${per}" step="0.01" min="0" required>
-         <span>a day</span>
+         <span>a day (${days} day${days===1?'':'s'} left)</span>
          <button type="submit" class="btn small">Save</button>
          <button type="button" class="btn small secondary" id="dailyCancel">Cancel</button>
        </form>`
-    : `<button class="daily-per" id="dailyEdit" title="Tap to change">${days} day${days===1?'':'s'} × ${fmt(per)} a day ✏️</button>`;
+    : '';
   return `
     <div class="daily-box">
       <div class="daily-big">${fmt(total)}</div>
-      <div class="daily-words">to set aside until your next payment</div>
-      ${amountBit}
-      <button class="daily-toggle" id="dailyToggle">▲ Hide this</button>
+      <div class="daily-words">left until next payment</div>
+      ${editingDaily ? amountBit : ''}
+      <div class="daily-links">
+        ${editingDaily ? '' : `<button class="daily-toggle" id="dailyEdit" title="Change how much a day">⚙️ Change</button>`}
+        <button class="daily-toggle" id="dailyToggle">▲ Hide</button>
+      </div>
     </div>`;
 }
 
@@ -1018,6 +1023,7 @@ function renderOverview(){
       ${usingLocalFallback ? `<div class="disclaimer">Saved on this device only right now — open this page the same way each time to keep your data.</div>`:''}
       ${saveFailedNotice ? `<div class="disclaimer" style="color:var(--bad);font-weight:700;">⚠️ Your last change couldn't reach the cloud, so it's only saved on this device for now. Try again with a good connection when you can.</div>`:''}
     </div>
+    <div class="app-version">Money Bloom · version 14 Oct 2026, 21:30</div>
     <div class="card">
       <h2>💾 Backup</h2>
       <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-4px;">
@@ -1867,9 +1873,17 @@ function renderList(kind){
           </select>
         </div>
         <div>
-          <label>Next payment date (optional — powers your Calendar tab)</label>
+          <label>Date</label>
           <input type="date" name="date">
         </div>
+        ${kind === 'outgoings' ? `
+        <div>
+          <label>Comes out of</label>
+          <select name="fromIncome">
+            <option value="">Let the app decide</option>
+            ${state.incomes.map(i=>`<option value="${i.id}">${escapeHtml(i.name)}</option>`).join('')}
+          </select>
+        </div>` : ''}
         <div class="row-btns">
           <button type="submit" class="btn" style="flex:1;">Add 🩷</button>
           <button type="button" class="btn secondary cancel-add-item" style="flex:1;">Cancel</button>
@@ -2040,7 +2054,14 @@ function renderList(kind){
     const fd = new FormData(form);
     const item = { id: uid(), name: fd.get('name').trim(), amount: parseFloat(fd.get('amount')), frequency: fd.get('frequency'), date: fd.get('date')||'' };
     if(!item.name || isNaN(item.amount)) return;
+    const pick3 = fd.get('fromIncome');
+    if(listKey === 'expenses' && pick3) item.fromIncome = pick3;
     state[listKey].push(item);
+    if(item.date){
+      const d3 = new Date(item.date + "T00:00:00");
+      if(!isNaN(d3.getTime())) calViewMonth = new Date(d3.getFullYear(), d3.getMonth(), 1);
+      if(pick3) outgoingGroupOpen[pick3] = true;   // open its group so you can see it landed
+    }
     form.reset();
     listAdding[kind] = false;
     await persist();
