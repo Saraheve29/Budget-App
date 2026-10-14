@@ -260,6 +260,16 @@
   .np-row b{ font-family:var(--font-head); color:var(--good); }
   .np-total{ font-weight:800; }
   .np-after{ margin-top:10px; font-size:0.78rem; color:var(--text-soft); }
+  .daily-box{ margin:12px auto 2px; max-width:340px; padding:10px 12px 8px; border-radius:14px;
+    background:var(--card); border:1.5px dashed var(--pink-3); }
+  .daily-big{ font-family:var(--font-head); font-weight:700; font-size:1.8rem; color:var(--good); line-height:1.1; }
+  .daily-words{ font-size:0.84rem; font-weight:700; color:var(--deep); }
+  .daily-per{ margin-top:6px; border:none; background:var(--pink-1); color:var(--text-soft);
+    font-size:0.78rem; font-weight:700; padding:5px 12px; border-radius:999px; cursor:pointer; }
+  .daily-edit{ margin-top:8px; display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; font-size:0.85rem; }
+  .daily-edit input{ width:80px; padding:7px 9px; border-radius:10px; border:1.5px solid var(--border); background:var(--pink-1); color:var(--text); }
+  .daily-toggle{ display:block; margin:8px auto 0; border:none; background:none; color:var(--pink-4);
+    font-size:0.76rem; font-weight:700; cursor:pointer; }
   .np-trip{ margin-top:8px; font-family:var(--font-head); font-weight:700; font-size:1.05rem; color:var(--pink-5); }
   .trip-when{ display:inline-block; font-size:0.74rem; font-weight:800; padding:3px 10px; border-radius:999px;
     background:var(--pink-2); color:var(--pink-5); }
@@ -405,7 +415,7 @@
 
 <script>
 const CAP = {};
-let state = { incomes: [], expenses: [], goals: [], trips: [], overrides: {}, skips: {}, paidMarks: {} };
+let state = { incomes: [], expenses: [], goals: [], trips: [], overrides: {}, skips: {}, paidMarks: {}, settings: {} };
 let openTripId = null;
 let editingItem = { kind: null, id: null };
 let editingGoalId = null;
@@ -437,6 +447,18 @@ let outgoingGroupOpen = {}; // which payment's outgoings are unfolded on the Out
 let listConfirmDelete = null; // {kind, id} waiting on 'are you sure?' before deleting
 let tiedConfirmDelete = null; // key of a row inside a payment waiting on 'are you sure?'
 let yearOpen = false;         // the whole-year panel on the Overview
+let editingDaily = false;     // typing a new daily amount on the Overview
+function dailyAmount(){
+  const v = state.settings && Number(state.settings.dailyAmount);
+  return (v && v > 0) ? v : 20;
+}
+// Whether the daily-money line is folded away is a per-device preference.
+function dailyOpen(){
+  try{ return localStorage.getItem('money_bloom_daily_open') !== '0'; }catch(e){ return true; }
+}
+function setDailyOpen(v){
+  try{ localStorage.setItem('money_bloom_daily_open', v ? '1' : '0'); }catch(e){}
+}
 let restoreOffer = null;      // a loaded backup file waiting to be confirmed
 let backupNotice = '';        // a short message after saving or restoring
 let forcedChangeLabel = '';   // set when an action knows better than the before/after guess
@@ -454,7 +476,7 @@ function hasOpenEditor(){
     editingTripDetailsId || editingTripPaidFor || editingTripBudgetFor || tripQuickAddFor ||
     editingIncomePaymentFor || editingTiedItem || editingMonthEntry || addingForDateKey || incomeAdding ||
     overviewAdding || searchEditingItemId || searchPaidEditing ||
-    searchConfirm || tripConfirmDelete || restoreOffer || listConfirmDelete || tiedConfirmDelete ||
+    searchConfirm || tripConfirmDelete || restoreOffer || listConfirmDelete || tiedConfirmDelete || editingDaily ||
     listAdding.income || listAdding.outgoings || listAddingTo
   );
 }
@@ -549,6 +571,9 @@ async function writeState(){
 function describeChange(before, after){
   if(!before || !after) return '';
   const same = (x,y)=>{ try{ return JSON.stringify(x)===JSON.stringify(y); }catch(e){ return false; } };
+
+  const bd = (before.settings||{}).dailyAmount, ad = (after.settings||{}).dailyAmount;
+  if(bd !== ad && ad !== undefined) return 'Changed daily money to ' + fmt(ad);
 
   for(const key of ['incomes','expenses','goals']){
     const b = before[key]||[], a = after[key]||[];
@@ -688,7 +713,8 @@ async function init(){
             trips: Array.isArray(d.trips) ? d.trips : [],
             overrides: (d.overrides && typeof d.overrides==='object') ? d.overrides : {},
             skips: (d.skips && typeof d.skips==='object') ? d.skips : {},
-            paidMarks: (d.paidMarks && typeof d.paidMarks==='object') ? d.paidMarks : {}
+            paidMarks: (d.paidMarks && typeof d.paidMarks==='object') ? d.paidMarks : {},
+            settings: (d.settings && typeof d.settings==='object') ? d.settings : {}
           };
         }
         lastSnapshot = cloneState();
@@ -850,6 +876,31 @@ function nextPaymentDays(){
   return first;
 }
 
+// "£20 a day until the next payment" — folds away, and the £20 can be changed.
+function dailyMoneyHtml(days){
+  const per = dailyAmount();
+  const total = per * days;
+  const open = dailyOpen();
+  if(!open){
+    return `<button class="daily-toggle" id="dailyToggle">▼ 💷 Show daily money</button>`;
+  }
+  const amountBit = editingDaily
+    ? `<form class="daily-edit" id="dailyForm">
+         <span>£</span><input type="number" name="daily" value="${per}" step="0.01" min="0" required>
+         <span>a day</span>
+         <button type="submit" class="btn small">Save</button>
+         <button type="button" class="btn small secondary" id="dailyCancel">Cancel</button>
+       </form>`
+    : `<button class="daily-per" id="dailyEdit" title="Tap to change">${days} day${days===1?'':'s'} × ${fmt(per)} a day ✏️</button>`;
+  return `
+    <div class="daily-box">
+      <div class="daily-big">${fmt(total)}</div>
+      <div class="daily-words">to set aside until your next payment</div>
+      ${amountBit}
+      <button class="daily-toggle" id="dailyToggle">▲ Hide this</button>
+    </div>`;
+}
+
 function nextPaymentHtml(){
   const np = nextPaymentDays();
   if(!np) return '';
@@ -866,6 +917,7 @@ function nextPaymentHtml(){
     <div class="card np-card">
       <div class="np-count"><span class="np-big">${big}</span><span class="np-words">${words}</span></div>
       <div class="np-date">📅 ${longDate(np.date)}</div>
+      ${np.days > 0 ? dailyMoneyHtml(np.days) : ''}
       <div class="np-list">${who}
         ${np.items.length > 1 ? `<div class="np-row np-total"><span>Together</span><b>${fmt(np.total)}</b></div>` : ''}
       </div>
@@ -1080,6 +1132,22 @@ function renderOverview(){
       await persist();
     });
   }
+  const dToggle = document.getElementById('dailyToggle');
+  if(dToggle) dToggle.addEventListener('click', ()=>{ setDailyOpen(!dailyOpen()); editingDaily = false; renderOverview(); });
+  const dEdit = document.getElementById('dailyEdit');
+  if(dEdit) dEdit.addEventListener('click', ()=>{ editingDaily = true; renderOverview(); });
+  const dCancel = document.getElementById('dailyCancel');
+  if(dCancel) dCancel.addEventListener('click', ()=>{ editingDaily = false; renderOverview(); });
+  const dForm = document.getElementById('dailyForm');
+  if(dForm) dForm.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const v = parseFloat(new FormData(dForm).get('daily'));
+    if(isNaN(v) || v < 0) return;
+    state.settings = Object.assign({}, state.settings || {}, { dailyAmount: v });
+    editingDaily = false;
+    forcedChangeLabel = 'Changed daily money to ' + fmt(v);
+    await persist();
+  });
   setupBackupUI();
   setupScreenshotUI();
 }
@@ -1191,7 +1259,8 @@ function setupBackupUI(){
         trips: Array.isArray(st.trips) ? st.trips : [],
         overrides: (st.overrides && typeof st.overrides==='object') ? st.overrides : {},
         skips: (st.skips && typeof st.skips==='object') ? st.skips : {},
-        paidMarks: (st.paidMarks && typeof st.paidMarks==='object') ? st.paidMarks : {}
+        paidMarks: (st.paidMarks && typeof st.paidMarks==='object') ? st.paidMarks : {},
+        settings: (st.settings && typeof st.settings==='object') ? st.settings : {}
       };
       backupNotice = 'Backup restored 🩷';
       forcedChangeLabel = 'Restored a backup';
@@ -1657,7 +1726,9 @@ function renderList(kind){
           return isPaidEntry(k, toDateStr(x.when)) ? t + getEffectiveAmount(x.item, x.when) : t;
         }, 0)
         + mineTrips.reduce((t,tr)=> isPaidEntry('trip-'+tr.paymentId, tr.dateStr) ? t + tr.amount : t, 0);
-      const nd = inc ? nextOccurrenceFromToday(inc) : null;
+      // Use the date it lands in the month you're LOOKING at — not the next
+      // one from today, or adding in November quietly files it in October.
+      const nd = inc ? (incDates.length ? incDates[0] : nextOccurrenceFromToday(inc)) : null;
       const ndStr = (nd && !isNaN(nd.getTime())) ? toDateStr(nd) : '';
       const adder = !inc ? '' : (listAddingTo === incId ? `
         <form class="addform group-add-form" data-inc="${incId}" style="margin:6px 0 14px;padding:12px;border:1.5px dashed var(--pink-3);border-radius:14px;">
@@ -1680,7 +1751,11 @@ function renderList(kind){
           </div>
           <div>
             <label>Which ${escapeHtml(incName)} payment?</label>
-            <input type="date" name="date" value="${ndStr}" required>
+            ${incDates.length > 1 ? `
+            <select name="date" required>
+              ${incDates.map(d=>`<option value="${toDateStr(d)}">${fmtDate(toDateStr(d))}</option>`).join('')}
+            </select>` : `
+            <input type="date" name="date" value="${ndStr}" required>`}
           </div>
           <div class="row-btns">
             <button type="submit" class="btn" style="flex:1;">Add to ${escapeHtml(incName)} 🩷</button>
@@ -3333,6 +3408,10 @@ function renderCalendar(){
           <option value="expense">Outgoing</option>
           <option value="income">Income</option>
         </select>
+        ${(incomeByDate[b.key]||[]).length > 1 ? `
+        <select name="fromIncome" title="Which payment does it come out of?" style="flex:1 0 100%;">
+          ${(incomeByDate[b.key]||[]).map(ie=>`<option value="${ie.itemId}">Comes out of ${escapeHtml(ie.name)}</option>`).join('')}
+        </select>` : ''}
         <select name="frequency" title="How often?">
           <option value="oneoff">Just this once</option>
           <option value="monthly">Every month</option>
@@ -3563,6 +3642,8 @@ function renderCalendar(){
       const kindKey = isIncome ? 'incomes' : 'expenses';
       if(!name || isNaN(amount)) return;
       const entry = { id: uid(), name, amount, frequency: fd.get('frequency') || 'oneoff', date };
+      const pick = fd.get('fromIncome');
+      if(!isIncome && pick) entry.fromIncome = pick;   // stays on the payment you chose
       state[kindKey].push(entry);
       addingForDateKey = null;
       await persist();
