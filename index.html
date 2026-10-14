@@ -1023,7 +1023,7 @@ function renderOverview(){
       ${usingLocalFallback ? `<div class="disclaimer">Saved on this device only right now — open this page the same way each time to keep your data.</div>`:''}
       ${saveFailedNotice ? `<div class="disclaimer" style="color:var(--bad);font-weight:700;">⚠️ Your last change couldn't reach the cloud, so it's only saved on this device for now. Try again with a good connection when you can.</div>`:''}
     </div>
-    <div class="app-version">Money Bloom · version 14 Oct 2026, 21:30</div>
+    <div class="app-version">Money Bloom · version 14 Oct 2026, 23:00</div>
     <div class="card">
       <h2>💾 Backup</h2>
       <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-4px;">
@@ -1524,14 +1524,14 @@ function renderList(kind){
     }, 0), 0);
   const isThisMonth = monthKeyFromDate(mStart) === monthKeyFromDate(new Date());
 
-  const dated = items.map(i=>{
-    let when = null;
-    if(i.date){
-      const occ = occurrencesInMonth(i, mStart, mEnd);
-      if(occ.length) when = occ[0];
-    }
-    return { item: i, when };
-  }).filter(d=> d.when || !d.item.date);   // keep undated ones visible always
+  // One row per DATE it lands on. Something that lands twice in a month gets
+  // two rows, each with its own date, amount and tick - never "1 Dec and 29 Dec"
+  // squashed into one.
+  const dated = [];
+  items.forEach(i=>{
+    if(!i.date){ dated.push({ item: i, when: null }); return; }   // keep undated ones visible always
+    occurrencesInMonth(i, mStart, mEnd).forEach(d=> dated.push({ item: i, when: d }));
+  });
   dated.sort((a,b)=>{
     if(!a.when && !b.when) return 0;
     if(!a.when) return 1;      // undated ones drop to the bottom
@@ -1550,11 +1550,16 @@ function renderList(kind){
       title="${t}">${done?'✓':'○'}</button>`;
   };
 
+  // An item that lands twice gets two rows; its edit box, delete question and
+  // details only appear once, on its first row.
+  const seenOnce = {};
   const itemHtml = (i, when)=>{
     // Show the date it actually lands on in the month being viewed, not the
     // anchor date it was first set up with — otherwise November still says
     // "23 Sept" and the list looks out of order when it isn't.
-    const occs = i.date ? occurrencesInMonth(i, mStart, mEnd) : [];
+    // Each row is ONE date only.
+    const occs = (when instanceof Date) ? [when] : (i.date ? occurrencesInMonth(i, mStart, mEnd).slice(0,1) : []);
+    const firstRow = !seenOnce[i.id]; seenOnce[i.id] = true;
     // Show what it actually is in THIS month. A month you've edited must not
     // keep showing the usual amount, or the row and the total disagree.
     const effAmounts = occs.map(d=>getEffectiveAmount(i, d));
@@ -1570,7 +1575,7 @@ function renderList(kind){
           : occs.map(d=>fmtDate(toDateStr(d))).join('  and  '))
       : (i.date ? fmtDate(i.date) : '');
     const notThisMonth = !occs.length && !!i.date;
-    const isEditing = editingItem.kind===listKey && editingItem.id===i.id;
+    const isEditing = firstRow && editingItem.kind===listKey && editingItem.id===i.id;
     if(isEditing){
       return `
       <form class="miniform edit-item-form" data-kind="${listKey}" data-id="${i.id}" style="padding:9px 4px;border-bottom:1px solid var(--border);">
@@ -1588,8 +1593,8 @@ function renderList(kind){
       </form>`;
     }
     const expandable = kind === 'income';
-    const isExpanded = expandable && expandedIncomeId === i.id;
-    if(listConfirmDelete && listConfirmDelete.kind === listKey && listConfirmDelete.id === i.id){
+    const isExpanded = expandable && firstRow && expandedIncomeId === i.id;
+    if(firstRow && listConfirmDelete && listConfirmDelete.kind === listKey && listConfirmDelete.id === i.id){
       const occCount = i.date && i.frequency !== 'oneoff' ? 'every date it appears on' : 'this one payment';
       return `
       <div class="confirm-box" style="margin:8px 0;">
@@ -1612,7 +1617,7 @@ function renderList(kind){
           <span class="name">${escapeHtml(i.name)}${expandable?` <span style="font-size:0.75rem;color:var(--pink-4);">${isExpanded?'▲':'▼ tap for details'}</span>`:''}</span>
           <span class="freq">${amountText} · ${freqLabel(i.frequency)}${edited ? ` <span class="pill" style="text-transform:none;letter-spacing:0;">changed for this month · usually ${fmt(i.amount)}</span>` : ''}</span>
           ${i.date
-            ? `<span class="datepill">📅 ${whenText}${occs.length > 1 ? ` <span class="pill" style="text-transform:none;letter-spacing:0;">twice this month</span>` : ''}${notThisMonth ? ' · nothing in this month' : ''}</span>`
+            ? `<span class="datepill">📅 ${whenText}${notThisMonth ? ' · nothing in this month' : ''}</span>`
             : `<span class="datepill nodate">No date set yet</span>`}
           ${(()=>{
             if(listKey !== 'expenses' || !i.date) return '';
@@ -1673,22 +1678,24 @@ function renderList(kind){
 
     // One block per payment. A payment with nothing coming out of it still gets
     // a block, so every payment shows what's left of it.
-    const groupKeys = [];
-    state.incomes.forEach(inc=>{
-      const hasItems = tagged.some(x=>x.incId === inc.id) || tripRows.some(tr=>tr.incId === inc.id);
-      const landsThisMonth = occurrencesInMonth(inc, mStart, mEnd).some(d=>!isSkipped(inc.id, d));
-      if(hasItems || landsThisMonth) groupKeys.push(inc.id);
-    });
-    // Put the payments in the order they land, so the page reads like the
-    // month does: earliest at the top.
-    const firstLanding = id=>{
-      const inc = state.incomes.find(v=>v.id===id);
-      const ds = inc ? occurrencesInMonth(inc, mStart, mEnd).filter(d=>!isSkipped(inc.id, d)) : [];
-      return ds.length ? ds[0].getTime() : Infinity;
+    // One block per PAYMENT DAY: Maleeka DLA on 1 Dec and Maleeka DLA on
+    // 29 Dec are two separate blocks, each with its own outgoings and its
+    // own "left", rather than the month's two payments added together.
+    const keyOf = (incId, ds)=> incId + '|' + ds;
+    const groupInfo = {};   // key -> { incId, dateStr, date }
+    const addGroup = (incId, d)=>{
+      const ds = toDateStr(d), k = keyOf(incId, ds);
+      if(!groupInfo[k]) groupInfo[k] = { incId, dateStr: ds, date: new Date(d) };
     };
+    state.incomes.forEach(inc=>{
+      occurrencesInMonth(inc, mStart, mEnd).filter(d=>!isSkipped(inc.id, d)).forEach(d=>addGroup(inc.id, d));
+    });
+    tagged.forEach(x=>{ if(x.incId && x.when) addGroup(x.incId, x.when); });
+    tripRows.forEach(tr=>{ if(tr.incId) addGroup(tr.incId, tr.when); });
     const incOrder = {};
     state.incomes.forEach((inc,ix)=>{ incOrder[inc.id] = ix; });
-    groupKeys.sort((a,b)=> (firstLanding(a) - firstLanding(b)) || (incOrder[a] - incOrder[b]));
+    const groupKeys = Object.keys(groupInfo).sort((a,b)=>
+      (groupInfo[a].date - groupInfo[b].date) || ((incOrder[groupInfo[a].incId]??99) - (incOrder[groupInfo[b].incId]??99)));
     if(tagged.some(x=>!x.incId) || tripRows.some(tr=>!tr.incId)) groupKeys.push('none');
 
     const tripRowHtml = (tr)=>{
@@ -1710,31 +1717,24 @@ function renderList(kind){
     };
 
     const groupHtml = (key)=>{
-      const incId = key === 'none' ? '' : key;
+      const gi = groupInfo[key] || null;
+      const incId = gi ? gi.incId : '';
       const incName = incomeNameById(incId);
-      const mine = tagged.filter(x=>(x.incId||'none') === key);
+      const inGroup = (id, d)=> key === 'none' ? !id : (gi && id === gi.incId && d && toDateStr(d) === gi.dateStr);
+      const mine = tagged.filter(x=> inGroup(x.incId, x.when));
       // Use what each one actually is on its own date, not its usual amount,
       // so an edited month adds up the way the Calendar does.
       const sub = mine.reduce((s,x)=> s + (x.when ? getEffectiveAmount(x.item, x.when) : (Number(x.item.amount)||0)), 0);
       const inc = incId ? state.incomes.find(v=>v.id===incId) : null;
       // Holiday instalments come out of these payments too, so they have to
       // count towards what's left - they're just managed on the Trips tab.
-      const mineTrips = tripRows.filter(tr=> (tr.incId||'none') === key);
+      const mineTrips = tripRows.filter(tr=> inGroup(tr.incId, tr.when));
       const tripOut = mineTrips.reduce((t,tr)=>t+tr.amount, 0);
-      // What this payment brings in across the whole month (a 4-weekly one can
-      // land twice), so "left" lines up with the month you're viewing.
-      const incDates = inc ? occurrencesInMonth(inc, mStart, mEnd).filter(d=>!isSkipped(inc.id, d)) : [];
-      const comesIn = incDates.reduce((s2,d)=>s2+getEffectiveAmount(inc, d), 0);
-      const shortDate = d => d.toLocaleDateString('en-GB', {day:'numeric', month:'short'});
-      const whenLine = incDates.length ? incDates.map(shortDate).join('  and  ') : '';
-      // When a payment lands more than once, show the sum rather than a total
-      // that looks like a single payment.
-      const inSums = incDates.map(d=>getEffectiveAmount(inc, d));
-      const allSame = inSums.every(v=>Math.abs(v-inSums[0])<0.005);
-      const inText = incDates.length > 1
-        ? (allSame ? `${fmt(inSums[0])} × ${incDates.length} = ${fmt(comesIn)} in`
-                   : `${inSums.map(v=>fmt(v)).join(' + ')} = ${fmt(comesIn)} in`)
-        : `${fmt(comesIn)} in`;
+      // Just this one payment, on this one day.
+      const incDates = (inc && gi) ? [gi.date] : [];
+      const comesIn = (inc && gi && !isSkipped(inc.id, gi.date)) ? getEffectiveAmount(inc, gi.date) : 0;
+      const whenLine = gi ? gi.date.toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'}) : '';
+      const inText = `${fmt(comesIn)} in`;
       const goesOut = sub + tripOut;
       const leftOver = comesIn - goesOut;
       const groupTicked =
@@ -1748,7 +1748,7 @@ function renderList(kind){
       // one from today, or adding in November quietly files it in October.
       const nd = inc ? (incDates.length ? incDates[0] : nextOccurrenceFromToday(inc)) : null;
       const ndStr = (nd && !isNaN(nd.getTime())) ? toDateStr(nd) : '';
-      const adder = !inc ? '' : (listAddingTo === incId ? `
+      const adder = !inc ? '' : (listAddingTo === key ? `
         <form class="addform group-add-form" data-inc="${incId}" style="margin:6px 0 14px;padding:12px;border:1.5px dashed var(--pink-3);border-radius:14px;">
           <div>
             <label>What's it called?</label>
@@ -1769,29 +1769,25 @@ function renderList(kind){
           </div>
           <div>
             <label>Which ${escapeHtml(incName)} payment?</label>
-            ${incDates.length > 1 ? `
-            <select name="date" required>
-              ${incDates.map(d=>`<option value="${toDateStr(d)}">${fmtDate(toDateStr(d))}</option>`).join('')}
-            </select>` : `
-            <input type="date" name="date" value="${ndStr}" required>`}
+            <input type="date" name="date" value="${ndStr}" required>
           </div>
           <div class="row-btns">
             <button type="submit" class="btn" style="flex:1;">Add to ${escapeHtml(incName)} 🩷</button>
             <button type="button" class="btn secondary cancel-group-add" style="flex:1;">Cancel</button>
           </div>
         </form>` : `
-        <button class="btn small secondary group-add-btn" data-inc="${incId}" style="width:100%;margin:4px 0 12px;">➕ Add an outgoing to ${escapeHtml(incName)}</button>`);
+        <button class="btn small secondary group-add-btn" data-group="${key}" style="width:100%;margin:4px 0 12px;">➕ Add an outgoing to ${escapeHtml(incName)} on ${gi ? gi.date.toLocaleDateString('en-GB',{day:'numeric',month:'short'}) : ''}</button>`);
       // Folded away by default so the page is a short list of payments. Stays
       // unfolded if something inside it is being edited or added to.
       const editingInHere = editingItem.kind === 'expenses' && mine.some(x=>x.item.id === editingItem.id);
-      const isOpen = !!outgoingGroupOpen[key] || listAddingTo === incId || editingInHere;
+      const isOpen = !!outgoingGroupOpen[key] || listAddingTo === key || editingInHere;
       const header = `
         <div class="cal-month group-head" data-group="${key}" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
           <span style="color:var(--pink-4);">${isOpen?'▲':'▼'}</span>
           ${incName ? '💌 '+escapeHtml(incName) : '📭 Nothing comes in on these dates'}
           <span class="pill" style="margin-left:auto;text-transform:none;letter-spacing:0;">${mine.length + mineTrips.length} going out · ${fmt(goesOut)}</span>
         </div>
-        ${whenLine ? `<div class="group-when">📅 ${whenLine}${incDates.length>1?` <span class="pill" style="text-transform:none;letter-spacing:0;">lands ${incDates.length === 2 ? 'twice' : incDates.length+' times'} this month</span>`:''}</div>` : ''}
+        ${whenLine ? `<div class="group-when">📅 ${whenLine}</div>` : ''}
         ${!inc && isOpen ? `<div class="disclaimer" style="margin:-2px 0 10px;">
           These go out on dates when no money comes in, so they aren't taken off any payment.
           Usually that means a payment is missing — add it on the Income tab with the right date and these will move under it on their own.
@@ -1804,7 +1800,7 @@ function renderList(kind){
             <span>${fmt(goesOut)} out${tripOut>0.001?` <i>(incl. ${fmt(tripOut)} holiday)</i>`:''}</span>
           </div>
           <div class="group-left-total">
-            <span>${leftOver < -0.001 ? 'Over by, across all of '+monthLabel.split(' ')[0] : 'Left from '+escapeHtml(incName)+' across '+monthLabel.split(' ')[0]}</span>
+            <span>${leftOver < -0.001 ? 'Over by' : 'Left from this payment'}</span>
             <b style="color:${leftOver < -0.001 ?'var(--bad)':'var(--good)'};">${fmt(Math.abs(leftOver))}</b>
           </div>
           ${(mine.length + mineTrips.length) ? `<div class="tick-progress">
@@ -1824,7 +1820,7 @@ function renderList(kind){
       });
       const body = merged.length
         ? merged.map(m=>m.html()).join('')
-        : `<div class="empty" style="padding:8px 0;font-size:0.85rem;">Nothing comes out of this payment in ${monthLabel}</div>`;
+        : `<div class="empty" style="padding:8px 0;font-size:0.85rem;">Nothing comes out of this payment</div>`;
       return header + body;
     };
 
@@ -2015,7 +2011,7 @@ function renderList(kind){
   });
 
   el.querySelectorAll('.group-add-btn').forEach(b=>{
-    b.addEventListener('click', ()=>{ listAddingTo = b.dataset.inc; outgoingGroupOpen[b.dataset.inc] = true; renderList(kind); });
+    b.addEventListener('click', ()=>{ listAddingTo = b.dataset.group; outgoingGroupOpen[b.dataset.group] = true; renderList(kind); });
   });
   el.querySelectorAll('.cancel-group-add').forEach(b=>{
     b.addEventListener('click', ()=>{ listAddingTo = null; renderList(kind); });
@@ -2060,7 +2056,7 @@ function renderList(kind){
     if(item.date){
       const d3 = new Date(item.date + "T00:00:00");
       if(!isNaN(d3.getTime())) calViewMonth = new Date(d3.getFullYear(), d3.getMonth(), 1);
-      if(pick3) outgoingGroupOpen[pick3] = true;   // open its group so you can see it landed
+      if(pick3) outgoingGroupOpen[pick3 + '|' + item.date] = true;   // open its block so you can see it landed
     }
     form.reset();
     listAdding[kind] = false;
