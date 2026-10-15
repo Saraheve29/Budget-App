@@ -1023,7 +1023,7 @@ function renderOverview(){
       ${usingLocalFallback ? `<div class="disclaimer">Saved on this device only right now — open this page the same way each time to keep your data.</div>`:''}
       ${saveFailedNotice ? `<div class="disclaimer" style="color:var(--bad);font-weight:700;">⚠️ Your last change couldn't reach the cloud, so it's only saved on this device for now. Try again with a good connection when you can.</div>`:''}
     </div>
-    <div class="app-version">Money Bloom · version 14 Oct 2026, 23:00</div>
+    <div class="app-version">Money Bloom · version 15 Oct 2026, 12:45</div>
     <div class="card">
       <h2>💾 Backup</h2>
       <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-4px;">
@@ -1701,6 +1701,20 @@ function renderList(kind){
     const tripRowHtml = (tr)=>{
       const key = 'trip-' + tr.paymentId;
       const done = isPaidEntry(key, tr.dateStr);
+      if(listConfirmDelete && listConfirmDelete.kind === 'trippay' && listConfirmDelete.id === tr.paymentId){
+        return `
+      <div class="confirm-box" style="margin:8px 0;">
+        <div class="confirm-text">
+          Delete <b>${escapeHtml(tr.label)}</b> (${fmt(tr.amount)} on ${fmtDate(tr.dateStr)})?<br>
+          It comes off ${escapeHtml(tr.tripName)} on your Trips tab too, and this payment's "left" goes back up by ${fmt(tr.amount)}.
+          <br><span style="color:var(--text-soft);">You can take it back with the ↩️ Undo button afterwards.</span>
+        </div>
+        <div class="row-btns">
+          <button class="btn small list-trip-del-yes" data-trip="${tr.tripId}" data-payment="${tr.paymentId}" style="flex:1;background:var(--bad);box-shadow:none;">Yes, delete it</button>
+          <button class="btn small secondary list-del-no" style="flex:1;">Cancel</button>
+        </div>
+      </div>`;
+      }
       return `
       <div class="item-row${done?' row-paid':''}">
         <div class="info">
@@ -1712,6 +1726,7 @@ function renderList(kind){
         <div style="display:flex;align-items:center;gap:8px;">
           ${tickHtml(key, tr.dateStr)}
           <button class="del trip-row-jump" data-trip="${tr.tripId}" title="Open this trip">✏️</button>
+          <button class="del trip-row-del" data-trip="${tr.tripId}" data-payment="${tr.paymentId}" title="Delete this holiday payment">✕</button>
         </div>
       </div>`;
     };
@@ -1917,7 +1932,26 @@ function renderList(kind){
     });
   });
 
-  el.querySelectorAll('.del:not(.edit-btn):not(.cal-jump):not(.paid-tick):not(.trip-row-jump)').forEach(btn=>{
+  // Holiday payments shown on Outgoings: ask, then delete from the trip itself.
+  el.querySelectorAll('.trip-row-del').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      listConfirmDelete = { kind: 'trippay', id: btn.dataset.payment, trip: btn.dataset.trip };
+      renderList(kind);
+    });
+  });
+  el.querySelectorAll('.list-trip-del-yes').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      listConfirmDelete = null;
+      const trip = state.trips.find(t=>t.id===b.dataset.trip);
+      if(!trip) return;
+      const pm = (trip.payments||[]).find(p=>p.id===b.dataset.payment);
+      trip.payments = (trip.payments||[]).filter(p=>p.id!==b.dataset.payment);
+      if(state.paidMarks) delete state.paidMarks['trip-'+b.dataset.payment];
+      forcedChangeLabel = 'Deleted ' + ((pm && pm.label) || 'a holiday payment');
+      await persist();
+    });
+  });
+  el.querySelectorAll('.del:not(.edit-btn):not(.cal-jump):not(.paid-tick):not(.trip-row-jump):not(.trip-row-del)').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const k = btn.dataset.kind, id = btn.dataset.id;
       // Only a real delete button carries both of these.
