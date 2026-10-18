@@ -1023,7 +1023,7 @@ function renderOverview(){
       ${usingLocalFallback ? `<div class="disclaimer">Saved on this device only right now — open this page the same way each time to keep your data.</div>`:''}
       ${saveFailedNotice ? `<div class="disclaimer" style="color:var(--bad);font-weight:700;">⚠️ Your last change couldn't reach the cloud, so it's only saved on this device for now. Try again with a good connection when you can.</div>`:''}
     </div>
-    <div class="app-version">Money Bloom · version 15 Oct 2026, 12:45</div>
+    <div class="app-version">Money Bloom · version 18 Oct 2026, 10:45</div>
     <div class="card">
       <h2>💾 Backup</h2>
       <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-4px;">
@@ -1843,6 +1843,24 @@ function renderList(kind){
       ? groupKeys.map(groupHtml).join('')
       : `<div class="empty">Nothing lands in ${monthLabel} 🌱</div>`;
 
+    // Anything taken off just this month is listed here, so it never seems to
+    // vanish - and one tap puts it back.
+    const skippedHere = state.expenses.filter(e=> e.date && e.frequency !== 'oneoff' &&
+      state.skips && state.skips[overrideKey(e.id, mStart)]);
+    if(skippedHere.length){
+      listHtml += `
+        <div class="cal-month" style="margin-top:14px;">🚫 Taken off ${monthLabel} only</div>
+        <div class="disclaimer" style="margin:-2px 0 8px;">These still happen in other months. They don't count in ${monthLabel}.</div>
+        ${skippedHere.map(e=>`
+        <div class="item-row row-paid">
+          <div class="info">
+            <span class="name">${escapeHtml(e.name)}</span>
+            <span class="freq">${fmt(Number(e.amount)||0)} · ${freqLabel(e.frequency)}</span>
+          </div>
+          <button class="btn small secondary unskip-btn" data-key="${overrideKey(e.id, mStart)}" data-name="${escapeHtml(e.name)}">↩ Put back</button>
+        </div>`).join('')}`;
+    }
+
   } else {
     let seenUndated = false;
     listHtml = dated.length ? dated.map(({item:i, when})=>{
@@ -2028,6 +2046,13 @@ function renderList(kind){
   });
 
   wirePaidTicks(el);
+  el.querySelectorAll('.unskip-btn').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      if(state.skips) delete state.skips[b.dataset.key];
+      forcedChangeLabel = 'Put back ' + (b.dataset.name || 'a payment');
+      await persist();
+    });
+  });
   el.querySelectorAll('.trip-row-jump').forEach(b=>{
     b.addEventListener('click', ()=>{
       openTripId = b.dataset.trip;
