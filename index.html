@@ -224,6 +224,8 @@
   .miniform input, .miniform select{ padding:8px 10px; border-radius:10px; border:1.5px solid var(--border); background:var(--pink-1); color:var(--text); font-size:0.85rem; }
   .miniform input[type="text"]{ flex:2; min-width:110px; }
   .miniform input[type="number"], .miniform input[type="date"]{ flex:1; min-width:90px; }
+  .idea-cost-form > *{ width:100%; min-width:0; flex:none; box-sizing:border-box; }
+  .idea-cost-form input[type="number"]{ min-width:0; }
   .checkline{ display:flex; align-items:center; gap:6px; font-size:0.78rem; color:var(--text-soft); margin-top:4px; }
   .trip-summary{ display:flex; gap:8px; margin: 8px 0 4px; flex-wrap:wrap; }
   .trip-summary .mini-stat{ background:var(--pink-1); border-radius:12px; padding:8px 12px; font-size:0.78rem; flex:1; min-width:100px; text-align:center; border:1px solid var(--border); }
@@ -417,7 +419,7 @@
 
 <script>
 const CAP = {};
-let state = { incomes: [], expenses: [], goals: [], trips: [], overrides: {}, skips: {}, paidMarks: {}, settings: {} };
+let state = { incomes: [], expenses: [], goals: [], trips: [], ideas: [], overrides: {}, skips: {}, paidMarks: {}, settings: {} };
 let openTripId = null;
 let editingItem = { kind: null, id: null };
 let editingGoalId = null;
@@ -450,6 +452,11 @@ let listConfirmDelete = null; // {kind, id} waiting on 'are you sure?' before de
 let tiedConfirmDelete = null; // key of a row inside a payment waiting on 'are you sure?'
 let yearOpen = false;         // the whole-year panel on the Overview
 let editingDaily = false;     // typing a new daily amount on the Overview
+// Trip ideas (not booked - just working out what something would cost)
+let openIdeaId = null;        // which idea is unfolded
+let ideaAdding = false;       // the 'new idea' form is open
+let ideaEditingId = null;     // idea whose details are being changed
+let ideaConfirm = null;       // {id, action:'del'|'book'} waiting on 'are you sure?'
 function dailyAmount(){
   const v = state.settings && Number(state.settings.dailyAmount);
   return (v && v > 0) ? v : 20;
@@ -479,6 +486,7 @@ function hasOpenEditor(){
     editingIncomePaymentFor || editingTiedItem || editingMonthEntry || addingForDateKey || incomeAdding ||
     overviewAdding || searchEditingItemId || searchPaidEditing ||
     searchConfirm || tripConfirmDelete || restoreOffer || listConfirmDelete || tiedConfirmDelete || editingDaily ||
+    ideaAdding || ideaEditingId || ideaConfirm ||
     listAdding.income || listAdding.outgoings || listAddingTo
   );
 }
@@ -539,6 +547,7 @@ function loadLocal(){
     const raw = localStorage.getItem(LOCAL_KEY);
     if(raw){
       state = JSON.parse(raw);
+      if(!Array.isArray(state.ideas)) state.ideas = [];
     } else if(typeof SEED_DATA !== 'undefined'){
       state = JSON.parse(JSON.stringify(SEED_DATA));
       saveLocal();
@@ -577,7 +586,7 @@ function describeChange(before, after){
   const bd = (before.settings||{}).dailyAmount, ad = (after.settings||{}).dailyAmount;
   if(bd !== ad && ad !== undefined) return 'Changed daily money to ' + fmt(ad);
 
-  for(const key of ['incomes','expenses','goals']){
+  for(const key of ['incomes','expenses','goals','ideas']){
     const b = before[key]||[], a = after[key]||[];
     const bIds = new Set(b.map(x=>x.id)), aIds = new Set(a.map(x=>x.id));
     const gone  = b.filter(x=>!aIds.has(x.id));
@@ -716,7 +725,8 @@ async function init(){
             overrides: (d.overrides && typeof d.overrides==='object') ? d.overrides : {},
             skips: (d.skips && typeof d.skips==='object') ? d.skips : {},
             paidMarks: (d.paidMarks && typeof d.paidMarks==='object') ? d.paidMarks : {},
-            settings: (d.settings && typeof d.settings==='object') ? d.settings : {}
+            settings: (d.settings && typeof d.settings==='object') ? d.settings : {},
+            ideas: Array.isArray(d.ideas) ? d.ideas : []
           };
         }
         lastSnapshot = cloneState();
@@ -1023,7 +1033,7 @@ function renderOverview(){
       ${usingLocalFallback ? `<div class="disclaimer">Saved on this device only right now — open this page the same way each time to keep your data.</div>`:''}
       ${saveFailedNotice ? `<div class="disclaimer" style="color:var(--bad);font-weight:700;">⚠️ Your last change couldn't reach the cloud, so it's only saved on this device for now. Try again with a good connection when you can.</div>`:''}
     </div>
-    <div class="app-version">Money Bloom · version 18 Oct 2026, 10:45</div>
+    <div class="app-version">Money Bloom · version 19 Oct 2026, 20:45</div>
     <div class="card">
       <h2>💾 Backup</h2>
       <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-4px;">
@@ -1278,7 +1288,8 @@ function setupBackupUI(){
         overrides: (st.overrides && typeof st.overrides==='object') ? st.overrides : {},
         skips: (st.skips && typeof st.skips==='object') ? st.skips : {},
         paidMarks: (st.paidMarks && typeof st.paidMarks==='object') ? st.paidMarks : {},
-        settings: (st.settings && typeof st.settings==='object') ? st.settings : {}
+        settings: (st.settings && typeof st.settings==='object') ? st.settings : {},
+        ideas: Array.isArray(st.ideas) ? st.ideas : []
       };
       backupNotice = 'Backup restored 🩷';
       forcedChangeLabel = 'Restored a backup';
@@ -2560,6 +2571,7 @@ function renderTrips(){
         ${trips.length ? trips.map(t=>tripCardHtml(t)).join('') : `<div class="empty">No trips yet — where are you off to? 🌴</div>`}
       </div>
     </div>
+    ${ideasHtml()}
     <div class="card">
       <h2>➕ New trip</h2>
       <form class="addform" id="tripForm">
@@ -2606,6 +2618,382 @@ function renderTrips(){
     </div>
   `;
   wireTripEvents();
+  wireIdeaEvents();
+}
+
+/* ---------- Trip ideas ---------- */
+// Nothing here is booked or counted in the budget. It only works out what a
+// trip WOULD cost, so ideas can be compared before deciding.
+const IDEA_TYPES = [
+  ['travel', '🚆 Travel'],
+  ['stay',   '🏨 Where to stay'],
+  ['food',   '🍽️ Food'],
+  ['days',   '🎟️ Days out'],
+  ['spend',  '🎒 Spending money'],
+  ['other',  '➕ Other']
+];
+const IDEA_PER = [
+  ['once',        'for everything'],
+  ['person',      'for each person'],
+  ['night',       'for each night'],
+  ['day',         'for each day'],
+  ['personnight', 'for each person, each night'],
+  ['personday',   'for each person, each day']
+];
+// Only real web addresses are turned into links. "booking.com/abc" becomes
+// "https://booking.com/abc"; anything that isn't http(s) is refused.
+function cleanLink(raw){
+  let u = String(raw||'').trim();
+  if(!u) return '';
+  if(!/^https?:\/\//i.test(u)){
+    if(/^[a-z][a-z0-9+.-]*:/i.test(u)) return '';
+    u = 'https://' + u;
+  }
+  try{ const x = new URL(u); return ((x.protocol === 'http:' || x.protocol === 'https:') && x.hostname.indexOf('.') > 0) ? x.href : ''; }
+  catch(e){ return ''; }
+}
+function linkSite(u){ try{ return new URL(u).hostname.replace(/^www\./,''); }catch(e){ return u; } }
+function linkHtml(u, text){
+  return `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer" style="color:var(--pink-5);font-weight:700;word-break:break-all;">${escapeHtml(text || linkSite(u))} ↗</a>`;
+}
+function linksListHtml(links, delClass, dataAttrs){
+  return (links||[]).map(l=>`
+        <div class="mini-row">
+          <div style="min-width:0;">
+            <span class="mname">🔗 ${linkHtml(l.url, l.label)}</span>
+            ${l.label ? `<span class="mdate">${escapeHtml(linkSite(l.url))}</span>` : ''}
+          </div>
+          ${delClass ? `<button class="mdel ${delClass}" ${dataAttrs} data-link="${l.id}" title="Remove this link">✕</button>` : ''}
+        </div>`).join('');
+}
+function ideaTypeLabel(k){ const f = IDEA_TYPES.find(t=>t[0]===k); return f ? f[1] : '➕ Other'; }
+function ideaNights(idea){ return Math.max(0, parseInt(idea.nights,10)||0); }
+function ideaDays(idea){ return ideaNights(idea) + 1; }
+function ideaPeople(idea){ return Math.max(1, parseInt(idea.people,10)||1); }
+function ideaTimes(idea, per){
+  const p = ideaPeople(idea), n = ideaNights(idea), d = ideaDays(idea);
+  switch(per){
+    case 'person': return p;
+    case 'night': return n;
+    case 'day': return d;
+    case 'personnight': return p * n;
+    case 'personday': return p * d;
+    default: return 1;
+  }
+}
+function ideaCostTotal(idea, c){ return (Number(c.amount)||0) * ideaTimes(idea, c.per); }
+// Written out in full so the sum can be checked by eye: "£25.00 × 3 people".
+function ideaSumText(idea, c){
+  const a = fmt(c.amount), p = ideaPeople(idea), n = ideaNights(idea), d = ideaDays(idea);
+  const pl = (x, one, many)=> x + ' ' + (x===1 ? one : many);
+  switch(c.per){
+    case 'person': return a + ' × ' + pl(p,'person','people');
+    case 'night': return a + ' × ' + pl(n,'night','nights');
+    case 'day': return a + ' × ' + pl(d,'day','days');
+    case 'personnight': return a + ' × ' + pl(p,'person','people') + ' × ' + pl(n,'night','nights');
+    case 'personday': return a + ' × ' + pl(p,'person','people') + ' × ' + pl(d,'day','days');
+    default: return a + ' for everything';
+  }
+}
+function ideaTotals(idea){
+  const byType = {};
+  let total = 0;
+  (idea.costs||[]).forEach(c=>{
+    const v = ideaCostTotal(idea, c);
+    byType[c.type||'other'] = (byType[c.type||'other']||0) + v;
+    total += v;
+  });
+  return { byType, total, each: total / ideaPeople(idea) };
+}
+// How much a month to put aside to have it all by the date they'd go.
+function ideaSaving(idea){
+  if(!idea.goDate) return null;
+  const go = new Date(idea.goDate + "T00:00:00");
+  if(isNaN(go.getTime())) return null;
+  const now = new Date(); now.setHours(0,0,0,0);
+  if(go <= now) return { past: true };
+  let months = (go.getFullYear() - now.getFullYear()) * 12 + (go.getMonth() - now.getMonth());
+  if(go.getDate() < now.getDate()) months -= 1;
+  months = Math.max(1, months);
+  const { total } = ideaTotals(idea);
+  return { months, perMonth: total / months };
+}
+
+function ideaFormFields(idea){
+  const v = idea || {};
+  return `
+        <div>
+          <label>What's the idea called?</label>
+          <input type="text" name="name" value="${escapeHtml(v.name||'')}" placeholder="e.g. Weekend in York" required>
+        </div>
+        <div>
+          <label>Where? (optional)</label>
+          <input type="text" name="place" value="${escapeHtml(v.place||'')}" placeholder="e.g. York">
+        </div>
+        <div style="display:flex;gap:8px;">
+          <div style="flex:1;">
+            <label>How many nights?</label>
+            <input type="number" name="nights" min="0" step="1" value="${v.nights!=null ? v.nights : 2}" required>
+          </div>
+          <div style="flex:1;">
+            <label>How many people?</label>
+            <input type="number" name="people" min="1" step="1" value="${v.people!=null ? v.people : 3}" required>
+          </div>
+        </div>
+        <div>
+          <label>When would you go? (optional)</label>
+          <input type="date" name="goDate" value="${v.goDate||''}">
+        </div>`;
+}
+
+function ideaCardHtml(idea){
+  const open = openIdeaId === idea.id;
+  const { byType, total, each } = ideaTotals(idea);
+  const n = ideaNights(idea), p = ideaPeople(idea);
+  const sizeLine = `${n} night${n===1?'':'s'} (${ideaDays(idea)} day${ideaDays(idea)===1?'':'s'}) · ${p} ${p===1?'person':'people'}`;
+  const head = `
+      <div class="trip-top idea-toggle" data-idea="${idea.id}">
+        <div>
+          <div class="tname">💡 ${escapeHtml(idea.name)}</div>
+          ${idea.place ? `<div class="tdest">📍 ${escapeHtml(idea.place)}</div>` : ''}
+          <div class="tdates">${sizeLine}${idea.goDate ? ' · 📅 ' + fmtDate(idea.goDate) : ''}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-family:var(--font-head);font-weight:700;font-size:1.15rem;color:var(--deep);">${fmt(total)}</div>
+          <div style="font-size:0.72rem;color:var(--text-soft);">would cost in total</div>
+          <div class="trip-toggle">${open?'▲':'▼'}</div>
+        </div>
+      </div>`;
+  if(!open) return `<div class="trip-card">${head}</div>`;
+
+  if(ideaEditingId === idea.id){
+    return `<div class="trip-card">${head}
+      <div class="trip-body">
+        <form class="addform idea-edit-form" data-idea="${idea.id}">
+          ${ideaFormFields(idea)}
+          <div class="row-btns">
+            <button type="submit" class="btn" style="flex:1;">Save 🩷</button>
+            <button type="button" class="btn secondary idea-edit-cancel" style="flex:1;">Cancel</button>
+          </div>
+        </form>
+      </div></div>`;
+  }
+
+  const rows = (idea.costs||[]).length ? (idea.costs||[]).map(c=>`
+        <div class="mini-row">
+          <div>
+            <span class="mname">${escapeHtml(c.label || ideaTypeLabel(c.type))}</span>
+            <span class="mdate">${ideaTypeLabel(c.type)} · ${ideaSumText(idea, c)}</span>
+            ${c.url ? `<span class="mdate">🔗 ${linkHtml(c.url)}</span>` : ''}
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <b style="font-family:var(--font-head);color:var(--deep);white-space:nowrap;">${fmt(ideaCostTotal(idea, c))}</b>
+            <button class="mdel idea-cost-del" data-idea="${idea.id}" data-cost="${c.id}" title="Remove this cost">✕</button>
+          </div>
+        </div>`).join('')
+    : `<div class="empty" style="padding:8px 0;font-size:0.85rem;">No costs yet — add the first one below</div>`;
+
+  const typeLines = IDEA_TYPES.filter(t=> byType[t[0]]).map(t=>`
+          <div class="np-row"><span>${t[1]}</span><span>${fmt(byType[t[0]])}</span></div>`).join('');
+  const sv = ideaSaving(idea);
+  const savingLine = !sv ? `<div class="disclaimer" style="margin-top:8px;">Add "when would you go?" (✏️ Change details) to see how much to save each month.</div>`
+    : sv.past ? `<div class="disclaimer" style="margin-top:8px;">The date you picked has already passed.</div>`
+    : `<div class="tick-progress"><span>To have it by ${fmtDate(idea.goDate)}</span><span>save <b>${fmt(sv.perMonth)}</b> a month for ${sv.months} month${sv.months===1?'':'s'}</span></div>`;
+
+  const confirm = ideaConfirm && ideaConfirm.id === idea.id ? (ideaConfirm.action === 'del' ? `
+        <div class="confirm-box" style="margin-top:14px;">
+          <div class="confirm-text">Delete the idea <b>${escapeHtml(idea.name)}</b>?<br>This only removes the idea. Nothing in your budget changes.
+            <br><span style="color:var(--text-soft);">You can take it back with the ↩️ Undo button afterwards.</span></div>
+          <div class="row-btns">
+            <button class="btn small idea-del-yes" data-idea="${idea.id}" style="flex:1;background:var(--bad);box-shadow:none;">Yes, delete it</button>
+            <button class="btn small secondary idea-confirm-no" style="flex:1;">Cancel</button>
+          </div>
+        </div>` : `
+        <div class="confirm-box" style="margin-top:14px;">
+          <div class="confirm-text">Make <b>${escapeHtml(idea.name)}</b> a real trip?<br>
+            It moves to your trips list with these budgets:<br>
+            🏖️ Holiday cost <b>${fmt((byType.travel||0)+(byType.stay||0)+(byType.other||0))}</b> (travel, where to stay, other)<br>
+            🎒 Spending money <b>${fmt((byType.food||0)+(byType.days||0)+(byType.spend||0))}</b> (food, days out, spending money)<br>
+            <span style="color:var(--text-soft);">No payments are added to your budget until you add them to the trip.</span></div>
+          <div class="row-btns">
+            <button class="btn small idea-book-yes" data-idea="${idea.id}" style="flex:1;">Yes, make it a trip 🧳</button>
+            <button class="btn small secondary idea-confirm-no" style="flex:1;">Cancel</button>
+          </div>
+        </div>`) : `
+        <div class="row-btns" style="margin-top:14px;flex-wrap:wrap;">
+          <button class="btn small idea-book" data-idea="${idea.id}" style="flex:1;">🧳 Make it a real trip</button>
+          <button class="btn small secondary idea-edit" data-idea="${idea.id}" style="flex:1;">✏️ Change details</button>
+          <button class="btn small idea-del" data-idea="${idea.id}" style="flex:1;background:var(--bad);box-shadow:none;">🗑️ Delete idea</button>
+        </div>`;
+
+  return `<div class="trip-card">${head}
+      <div class="trip-body">
+        <div class="subhead">🧮 Costs</div>
+        ${rows}
+        <form class="miniform idea-cost-form" data-idea="${idea.id}" style="flex-direction:column;align-items:stretch;border:1.5px dashed var(--pink-3);border-radius:14px;padding:10px;margin-top:10px;">
+          <div style="font-weight:700;font-size:0.82rem;color:var(--pink-5);">➕ Add a cost</div>
+          <select name="type">${IDEA_TYPES.map(t=>`<option value="${t[0]}">${t[1]}</option>`).join('')}</select>
+          <input type="text" name="label" placeholder="What is it? e.g. Train tickets">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span style="font-weight:700;">£</span>
+            <input type="number" name="amount" step="0.01" min="0" placeholder="Price" required style="flex:1;">
+          </div>
+          <select name="per">${IDEA_PER.map(t=>`<option value="${t[0]}">That price is ${t[1]}</option>`).join('')}</select>
+          <input type="text" name="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="Link (optional) e.g. booking.com/…">
+          <button type="submit" class="btn small">Add cost</button>
+        </form>
+
+        <div class="subhead" style="margin-top:14px;">🔗 Links</div>
+        ${(idea.links||[]).length ? linksListHtml(idea.links, 'idea-link-del', `data-idea="${idea.id}"`)
+          : `<div class="empty" style="padding:6px 0;font-size:0.85rem;">No links yet</div>`}
+        <form class="miniform idea-link-form" data-idea="${idea.id}" style="flex-direction:column;align-items:stretch;border:1.5px dashed var(--pink-3);border-radius:14px;padding:10px;margin-top:8px;">
+          <div style="font-weight:700;font-size:0.82rem;color:var(--pink-5);">➕ Add a link</div>
+          <input type="text" name="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="Paste the web address" required>
+          <input type="text" name="label" placeholder="Name it (optional) e.g. Hotel page">
+          <div class="idea-link-msg" style="font-size:0.78rem;color:var(--bad);display:none;">That doesn't look like a web address. It should look like booking.com/… or https://…</div>
+          <button type="submit" class="btn small">Add link</button>
+        </form>
+
+        <div class="subhead" style="margin-top:14px;">💷 What it would cost</div>
+        <div class="group-left">
+          ${typeLines || '<div class="np-row"><span>Nothing added yet</span><span>£0.00</span></div>'}
+          <div class="group-left-total"><span>Total</span><b style="color:var(--deep);">${fmt(total)}</b></div>
+          <div class="np-row" style="border-top:none;padding-bottom:0;"><span>Each person</span><span>${fmt(each)}</span></div>
+          ${savingLine}
+        </div>
+        ${confirm}
+      </div></div>`;
+}
+
+function ideasHtml(){
+  const ideas = state.ideas || [];
+  return `
+    <div class="card">
+      <h2>💡 Trip ideas</h2>
+      <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-6px;">Not booked. These just work out what a trip would cost, travel included. They don't change your budget.</p>
+      ${ideas.length ? ideas.map(ideaCardHtml).join('') : `<div class="empty">No ideas yet — dream a little 🌈</div>`}
+      ${ideaAdding ? `
+      <form class="addform" id="ideaForm" style="border-top:1.5px dashed var(--border);padding-top:12px;">
+        ${ideaFormFields(null)}
+        <div class="row-btns">
+          <button type="submit" class="btn" style="flex:1;">Add idea 💡</button>
+          <button type="button" class="btn secondary idea-add-cancel" style="flex:1;">Cancel</button>
+        </div>
+      </form>` : `<button class="btn" id="ideaAddBtn" style="width:100%;margin-top:6px;">➕ Add a trip idea</button>`}
+    </div>`;
+}
+
+function wireIdeaEvents(){
+  const el = document.getElementById('tab-trips');
+  const findIdea = id => (state.ideas||[]).find(x=>x.id===id);
+  const readDetails = (form, idea)=>{
+    const fd = new FormData(form);
+    idea.name = (fd.get('name')||'').trim() || 'Trip idea';
+    idea.place = (fd.get('place')||'').trim();
+    idea.nights = Math.max(0, parseInt(fd.get('nights'),10)||0);
+    idea.people = Math.max(1, parseInt(fd.get('people'),10)||1);
+    idea.goDate = fd.get('goDate') || '';
+  };
+  const addBtn = el.querySelector('#ideaAddBtn');
+  if(addBtn) addBtn.addEventListener('click', ()=>{ ideaAdding = true; renderTrips(); });
+  el.querySelectorAll('.idea-add-cancel').forEach(b=>b.addEventListener('click', ()=>{ ideaAdding = false; renderTrips(); }));
+  const form = el.querySelector('#ideaForm');
+  if(form) form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const idea = { id: uid(), costs: [] };
+    readDetails(form, idea);
+    state.ideas = state.ideas || [];
+    state.ideas.push(idea);
+    ideaAdding = false;
+    openIdeaId = idea.id;
+    await persist();
+  });
+  el.querySelectorAll('.idea-toggle').forEach(h=>h.addEventListener('click', ()=>{
+    openIdeaId = openIdeaId === h.dataset.idea ? null : h.dataset.idea;
+    ideaEditingId = null; ideaConfirm = null;
+    renderTrips();
+  }));
+  el.querySelectorAll('.idea-edit').forEach(b=>b.addEventListener('click', ()=>{ ideaEditingId = b.dataset.idea; renderTrips(); }));
+  el.querySelectorAll('.idea-edit-cancel').forEach(b=>b.addEventListener('click', ()=>{ ideaEditingId = null; renderTrips(); }));
+  el.querySelectorAll('.idea-edit-form').forEach(f=>f.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const idea = findIdea(f.dataset.idea); if(!idea) return;
+    readDetails(f, idea);
+    ideaEditingId = null;
+    await persist();
+  }));
+  el.querySelectorAll('.idea-cost-form').forEach(f=>f.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const idea = findIdea(f.dataset.idea); if(!idea) return;
+    const fd = new FormData(f);
+    const amount = parseFloat(fd.get('amount'));
+    if(!(amount >= 0)) return;
+    const type = fd.get('type') || 'other';
+    idea.costs = idea.costs || [];
+    idea.costs.push({ id: uid(), type, label: (fd.get('label')||'').trim() || ideaTypeLabel(type).replace(/^\S+\s/, ''),
+      amount, per: fd.get('per') || 'once', url: cleanLink(fd.get('url')) });
+    forcedChangeLabel = 'Added a cost to ' + idea.name;
+    await persist();
+  }));
+  el.querySelectorAll('.idea-link-form').forEach(f=>f.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const idea = findIdea(f.dataset.idea); if(!idea) return;
+    const fd = new FormData(f);
+    const url = cleanLink(fd.get('url'));
+    if(!url){ const m = f.querySelector('.idea-link-msg'); if(m) m.style.display = 'block'; return; }
+    idea.links = idea.links || [];
+    idea.links.push({ id: uid(), url, label: (fd.get('label')||'').trim() });
+    forcedChangeLabel = 'Added a link to ' + idea.name;
+    await persist();
+  }));
+  el.querySelectorAll('.idea-link-del').forEach(b=>b.addEventListener('click', async ()=>{
+    const idea = findIdea(b.dataset.idea); if(!idea) return;
+    idea.links = (idea.links||[]).filter(x=>x.id!==b.dataset.link);
+    forcedChangeLabel = 'Removed a link from ' + idea.name;
+    await persist();
+  }));
+  el.querySelectorAll('.idea-cost-del').forEach(b=>b.addEventListener('click', async ()=>{
+    const idea = findIdea(b.dataset.idea); if(!idea) return;
+    const c = (idea.costs||[]).find(x=>x.id===b.dataset.cost);
+    idea.costs = (idea.costs||[]).filter(x=>x.id!==b.dataset.cost);
+    forcedChangeLabel = 'Removed ' + ((c && c.label) || 'a cost') + ' from ' + idea.name;
+    await persist();
+  }));
+  el.querySelectorAll('.idea-del').forEach(b=>b.addEventListener('click', ()=>{ ideaConfirm = { id: b.dataset.idea, action: 'del' }; renderTrips(); }));
+  el.querySelectorAll('.idea-book').forEach(b=>b.addEventListener('click', ()=>{ ideaConfirm = { id: b.dataset.idea, action: 'book' }; renderTrips(); }));
+  el.querySelectorAll('.idea-confirm-no').forEach(b=>b.addEventListener('click', ()=>{ ideaConfirm = null; renderTrips(); }));
+  el.querySelectorAll('.idea-del-yes').forEach(b=>b.addEventListener('click', async ()=>{
+    const idea = findIdea(b.dataset.idea);
+    ideaConfirm = null; openIdeaId = null;
+    state.ideas = (state.ideas||[]).filter(x=>x.id!==b.dataset.idea);
+    forcedChangeLabel = 'Deleted the idea ' + (idea ? idea.name : '');
+    await persist();
+  }));
+  el.querySelectorAll('.idea-book-yes').forEach(b=>b.addEventListener('click', async ()=>{
+    const idea = findIdea(b.dataset.idea); if(!idea) return;
+    const { byType } = ideaTotals(idea);
+    const r2 = x => Math.round(x*100)/100;
+    let endDate = '';
+    if(idea.goDate){
+      const e = new Date(idea.goDate + "T00:00:00"); e.setDate(e.getDate() + ideaNights(idea));
+      endDate = toDateStr(e);
+    }
+    const trip = {
+      id: uid(), name: idea.name, destination: idea.place || '',
+      startDate: idea.goDate || '', endDate,
+      accommodationBudget: r2((byType.travel||0) + (byType.stay||0) + (byType.other||0)),
+      spendingBudget: r2((byType.food||0) + (byType.days||0) + (byType.spend||0)),
+      accommodationDueDate: '', spendingDueDate: '',
+      payments: [], itinerary: [],
+      // Keep every link from the idea, including ones on single costs.
+      links: (idea.links||[]).concat((idea.costs||[]).filter(c=>c.url).map(c=>({ id: uid(), url: c.url, label: c.label || '' })))
+    };
+    state.trips.push(trip);
+    state.ideas = (state.ideas||[]).filter(x=>x.id!==idea.id);
+    ideaConfirm = null; openIdeaId = null; openTripId = trip.id;
+    forcedChangeLabel = 'Made ' + idea.name + ' a real trip';
+    await persist();
+  }));
 }
 
 function tripCardHtml(t){
@@ -2821,6 +3209,7 @@ function tripCardHtml(t){
       <div class="disclaimer" style="text-align:center;">Tap "Paid" or "Budget" to enter an amount manually. Tap "Hide" to tuck a paid-off section away — nothing is deleted.</div>
 
       <div class="trip-body ${open?'':'hidden'}" data-body="${t.id}">
+        ${(t.links||[]).length ? `<div class="subhead">🔗 Links</div>${linksListHtml(t.links, 'trip-link-del', `data-trip="${t.id}"`)}` : ''}
         <div class="subhead">💳 Payments</div>
         ${(t.payments||[]).length ? t.payments.map(p=>{
           const isEditing = editingTripEntry.tripId===t.id && editingTripEntry.kind==='payments' && editingTripEntry.id===p.id;
@@ -2884,6 +3273,12 @@ function tripCardHtml(t){
 
 function wireTripEvents(){
   const el = document.getElementById('tab-trips');
+  el.querySelectorAll('.trip-link-del').forEach(b=>b.addEventListener('click', async ()=>{
+    const t = state.trips.find(x=>x.id===b.dataset.trip); if(!t) return;
+    t.links = (t.links||[]).filter(x=>x.id!==b.dataset.link);
+    forcedChangeLabel = 'Removed a link from ' + t.name;
+    await persist();
+  }));
 
   el.querySelectorAll('[data-toggle]').forEach(row=>{
     row.addEventListener('click', (e)=>{
