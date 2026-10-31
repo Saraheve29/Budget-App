@@ -419,7 +419,7 @@
 
 <script>
 const CAP = {};
-let state = { incomes: [], expenses: [], goals: [], trips: [], ideas: [], overrides: {}, skips: {}, paidMarks: {}, settings: {} };
+let state = { incomes: [], expenses: [], goals: [], trips: [], ideas: [], notes: [], overrides: {}, skips: {}, paidMarks: {}, settings: {} };
 let openTripId = null;
 let editingItem = { kind: null, id: null };
 let editingGoalId = null;
@@ -457,6 +457,11 @@ let openIdeaId = null;        // which idea is unfolded
 let ideaAdding = false;       // the 'new idea' form is open
 let ideaEditingId = null;     // idea whose details are being changed
 let ideaConfirm = null;       // {id, action:'del'|'book'} waiting on 'are you sure?'
+// Notes & reminders on the Overview
+let noteAdding = false;       // the 'add a note' form is open
+let noteEditingId = null;     // note being changed
+let noteConfirm = null;       // note id waiting on 'are you sure?' before deleting
+let notesDoneOpen = false;    // the folded list of done notes
 function dailyAmount(){
   const v = state.settings && Number(state.settings.dailyAmount);
   return (v && v > 0) ? v : 20;
@@ -486,7 +491,7 @@ function hasOpenEditor(){
     editingIncomePaymentFor || editingTiedItem || editingMonthEntry || addingForDateKey || incomeAdding ||
     overviewAdding || searchEditingItemId || searchPaidEditing ||
     searchConfirm || tripConfirmDelete || restoreOffer || listConfirmDelete || tiedConfirmDelete || editingDaily ||
-    ideaAdding || ideaEditingId || ideaConfirm ||
+    ideaAdding || ideaEditingId || ideaConfirm || noteAdding || noteEditingId || noteConfirm ||
     listAdding.income || listAdding.outgoings || listAddingTo
   );
 }
@@ -548,6 +553,7 @@ function loadLocal(){
     if(raw){
       state = JSON.parse(raw);
       if(!Array.isArray(state.ideas)) state.ideas = [];
+      if(!Array.isArray(state.notes)) state.notes = [];
     } else if(typeof SEED_DATA !== 'undefined'){
       state = JSON.parse(JSON.stringify(SEED_DATA));
       saveLocal();
@@ -586,7 +592,7 @@ function describeChange(before, after){
   const bd = (before.settings||{}).dailyAmount, ad = (after.settings||{}).dailyAmount;
   if(bd !== ad && ad !== undefined) return 'Changed daily money to ' + fmt(ad);
 
-  for(const key of ['incomes','expenses','goals','ideas']){
+  for(const key of ['incomes','expenses','goals','ideas','notes']){
     const b = before[key]||[], a = after[key]||[];
     const bIds = new Set(b.map(x=>x.id)), aIds = new Set(a.map(x=>x.id));
     const gone  = b.filter(x=>!aIds.has(x.id));
@@ -726,7 +732,8 @@ async function init(){
             skips: (d.skips && typeof d.skips==='object') ? d.skips : {},
             paidMarks: (d.paidMarks && typeof d.paidMarks==='object') ? d.paidMarks : {},
             settings: (d.settings && typeof d.settings==='object') ? d.settings : {},
-            ideas: Array.isArray(d.ideas) ? d.ideas : []
+            ideas: Array.isArray(d.ideas) ? d.ideas : [],
+            notes: Array.isArray(d.notes) ? d.notes : []
           };
         }
         lastSnapshot = cloneState();
@@ -940,6 +947,190 @@ function nextPaymentHtml(){
     </div>`;
 }
 
+/* ---------- Notes & reminders ---------- */
+// Things not to forget: money lent out, money to put back, anything else.
+// A reminder shows at the very top of the Overview from its date until it
+// is ticked done. (The app can't ping the phone - it shows when it's opened.)
+const NOTE_KINDS = [
+  ['lent',    '🤝', 'Money I\'ve lent'],
+  ['putback', '🔁', 'Money to put back'],
+  ['owe',     '💷', 'Money I owe'],
+  ['note',    '📝', 'Just a note']
+];
+function noteKind(k){ return NOTE_KINDS.find(x=>x[0]===k) || NOTE_KINDS[3]; }
+function todayStr(){ return toDateStr(new Date()); }
+function daysUntil(ds){
+  const a = new Date(todayStr() + "T00:00:00"), b = new Date(ds + "T00:00:00");
+  return Math.round((b - a) / 86400000);
+}
+function noteWhenText(n){
+  if(!n.remindDate) return 'No reminder date';
+  const d = daysUntil(n.remindDate);
+  const when = fmtDate(n.remindDate);
+  if(d === 0) return '🔔 Today · ' + when;
+  if(d === 1) return '🔔 Tomorrow · ' + when;
+  if(d > 1) return '🔔 In ' + d + ' days · ' + when;
+  return '⏰ ' + (-d) + ' day' + (d===-1?'':'s') + ' ago · ' + when;
+}
+function noteTitle(n){
+  const k = noteKind(n.kind);
+  return k[1] + ' ' + escapeHtml(n.name) + (Number(n.amount) > 0 ? ' · <b>' + fmt(n.amount) + '</b>' : '');
+}
+function dueNotesHtml(){
+  const due = (state.notes||[]).filter(n=> !n.done && n.remindDate && n.remindDate <= todayStr())
+    .sort((a,b)=> a.remindDate < b.remindDate ? -1 : 1);
+  if(!due.length) return '';
+  return `
+    <div class="card" style="border:2px solid var(--pink-4);background:linear-gradient(150deg,var(--card),var(--pink-1));">
+      <h2>🔔 Don't forget</h2>
+      ${due.map(n=>`
+      <div class="mini-row">
+        <div style="min-width:0;">
+          <span class="mname">${noteTitle(n)}</span>
+          <span class="mdate">${noteKind(n.kind)[2]} · ${noteWhenText(n)}</span>
+        </div>
+        <button class="btn small note-done" data-note="${n.id}" style="flex-shrink:0;">✓ Done</button>
+      </div>`).join('')}
+    </div>`;
+}
+function noteFormFields(n){
+  const v = n || {};
+  return `
+        <div>
+          <label>What sort of note?</label>
+          <select name="kind">${NOTE_KINDS.map(k=>`<option value="${k[0]}" ${v.kind===k[0]?'selected':''}>${k[1]} ${k[2]}</option>`).join('')}</select>
+        </div>
+        <div>
+          <label>What is it?</label>
+          <input type="text" name="name" value="${escapeHtml(v.name||'')}" placeholder="e.g. Lent my son money" required>
+        </div>
+        <div>
+          <label>Amount (£) — optional</label>
+          <input type="number" name="amount" step="0.01" min="0" value="${Number(v.amount)>0 ? v.amount : ''}">
+        </div>
+        <div>
+          <label>Remind me on — optional</label>
+          <input type="date" name="remindDate" value="${v.remindDate||''}">
+        </div>`;
+}
+function notesHtml(){
+  const notes = state.notes || [];
+  const open = notes.filter(n=>!n.done).sort((a,b)=>{
+    if(!a.remindDate && !b.remindDate) return 0;
+    if(!a.remindDate) return 1;
+    if(!b.remindDate) return -1;
+    return a.remindDate < b.remindDate ? -1 : (a.remindDate > b.remindDate ? 1 : 0);
+  });
+  const done = notes.filter(n=>n.done);
+  const sum = k => open.filter(n=>n.kind===k).reduce((t,n)=>t+(Number(n.amount)||0),0);
+  const sums = [['lent','Lent out'],['putback','To put back'],['owe','I owe']]
+    .filter(x=>sum(x[0])>0).map(x=>`<span>${noteKind(x[0])[1]} ${x[1]} <b>${fmt(sum(x[0]))}</b></span>`).join('');
+  const row = n=>{
+    if(noteEditingId === n.id) return `
+      <form class="addform note-edit-form" data-note="${n.id}" style="border:1.5px dashed var(--pink-3);border-radius:14px;padding:10px;margin:6px 0;">
+        ${noteFormFields(n)}
+        <div class="row-btns">
+          <button type="submit" class="btn" style="flex:1;">Save 🩷</button>
+          <button type="button" class="btn secondary note-cancel" style="flex:1;">Cancel</button>
+        </div>
+      </form>`;
+    if(noteConfirm === n.id) return `
+      <div class="confirm-box">
+        <div class="confirm-text">Delete the note <b>${escapeHtml(n.name)}</b>?<br>
+          <span style="color:var(--text-soft);">You can take it back with the ↩️ Undo button afterwards.</span></div>
+        <div class="row-btns">
+          <button class="btn small note-del-yes" data-note="${n.id}" style="flex:1;background:var(--bad);box-shadow:none;">Yes, delete it</button>
+          <button class="btn small secondary note-cancel" style="flex:1;">Cancel</button>
+        </div>
+      </div>`;
+    return `
+      <div class="mini-row${n.done?' row-paid':''}">
+        <div style="min-width:0;">
+          <span class="mname">${noteTitle(n)}</span>
+          <span class="mdate">${noteKind(n.kind)[2]} · ${n.done ? '✓ Done' + (n.doneAt ? ' ' + fmtDate(n.doneAt) : '') : noteWhenText(n)}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+          <button class="paid-tick${n.done?' is-done':''} note-tick" data-note="${n.id}" title="${n.done?'Done — tap to undo':'Tap when it\'s sorted'}">${n.done?'✓':'○'}</button>
+          ${n.done ? '' : `<button class="mdel note-edit" data-note="${n.id}" title="Change">✏️</button>`}
+          <button class="mdel note-del" data-note="${n.id}" title="Delete">✕</button>
+        </div>
+      </div>`;
+  };
+  return `
+    <div class="card">
+      <h2>📝 Notes &amp; reminders</h2>
+      <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-6px;">For things not to forget. Notes don't change your budget. A note with a date shows at the top of this page from that day until you tick it ✓.</p>
+      ${sums ? `<div class="tick-progress" style="border-top:none;margin-top:0;padding-top:0;margin-bottom:6px;">${sums}</div>` : ''}
+      ${open.length ? open.map(row).join('') : `<div class="empty">Nothing to remember right now 🌸</div>`}
+      ${noteAdding ? `
+      <form class="addform" id="noteForm" style="border-top:1.5px dashed var(--border);padding-top:12px;">
+        ${noteFormFields(null)}
+        <div class="row-btns">
+          <button type="submit" class="btn" style="flex:1;">Add note 📝</button>
+          <button type="button" class="btn secondary note-cancel" style="flex:1;">Cancel</button>
+        </div>
+      </form>` : `<button class="btn" id="noteAddBtn" style="width:100%;margin-top:8px;">➕ Add a note</button>`}
+      ${done.length ? `
+      <button class="btn small secondary" id="notesDoneToggle" style="width:100%;margin-top:10px;text-align:left;">
+        ${notesDoneOpen?'▲':'▼'} ✓ Done (${done.length})
+      </button>
+      ${notesDoneOpen ? done.map(row).join('') : ''}` : ''}
+    </div>`;
+}
+function wireNotes(el){
+  const find = id => (state.notes||[]).find(n=>n.id===id);
+  const read = (form, n)=>{
+    const fd = new FormData(form);
+    n.kind = fd.get('kind') || 'note';
+    n.name = (fd.get('name')||'').trim() || 'Note';
+    const a = parseFloat(fd.get('amount'));
+    n.amount = a > 0 ? a : 0;
+    n.remindDate = fd.get('remindDate') || '';
+  };
+  const add = el.querySelector('#noteAddBtn');
+  if(add) add.addEventListener('click', ()=>{ noteAdding = true; renderOverview(); });
+  el.querySelectorAll('.note-cancel').forEach(b=>b.addEventListener('click', ()=>{
+    noteAdding = false; noteEditingId = null; noteConfirm = null; renderOverview(); }));
+  const form = el.querySelector('#noteForm');
+  if(form) form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const n = { id: uid(), done: false, createdAt: todayStr() };
+    read(form, n);
+    state.notes = state.notes || [];
+    state.notes.push(n);
+    noteAdding = false;
+    forcedChangeLabel = 'Added the note ' + n.name;
+    await persist();
+  });
+  el.querySelectorAll('.note-edit').forEach(b=>b.addEventListener('click', ()=>{ noteEditingId = b.dataset.note; renderOverview(); }));
+  el.querySelectorAll('.note-edit-form').forEach(f=>f.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const n = find(f.dataset.note); if(!n) return;
+    read(f, n);
+    noteEditingId = null;
+    forcedChangeLabel = 'Changed the note ' + n.name;
+    await persist();
+  }));
+  const setDone = async (id, v)=>{
+    const n = find(id); if(!n) return;
+    n.done = v; n.doneAt = v ? todayStr() : '';
+    forcedChangeLabel = (v ? 'Ticked off ' : 'Unticked ') + n.name;
+    await persist();
+  };
+  el.querySelectorAll('.note-tick').forEach(b=>b.addEventListener('click', ()=>{ const n = find(b.dataset.note); if(n) setDone(n.id, !n.done); }));
+  el.querySelectorAll('.note-done').forEach(b=>b.addEventListener('click', ()=> setDone(b.dataset.note, true)));
+  el.querySelectorAll('.note-del').forEach(b=>b.addEventListener('click', ()=>{ noteConfirm = b.dataset.note; renderOverview(); }));
+  el.querySelectorAll('.note-del-yes').forEach(b=>b.addEventListener('click', async ()=>{
+    const n = find(b.dataset.note);
+    noteConfirm = null;
+    state.notes = (state.notes||[]).filter(x=>x.id!==b.dataset.note);
+    forcedChangeLabel = 'Deleted the note ' + (n ? n.name : '');
+    await persist();
+  }));
+  const dt = el.querySelector('#notesDoneToggle');
+  if(dt) dt.addEventListener('click', ()=>{ notesDoneOpen = !notesDoneOpen; renderOverview(); });
+}
+
 function renderOverview(){
   // Shares its month with the Calendar tab, so stepping forward here and then
   // opening the Calendar lands you on the same month.
@@ -951,6 +1142,7 @@ function renderOverview(){
   const {incMonthly, expMonthly, remaining} = totals(monthStart);
   const el = document.getElementById('tab-overview');
   el.innerHTML = `
+    ${dueNotesHtml()}
     ${nextPaymentHtml()}
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;">
@@ -1033,7 +1225,8 @@ function renderOverview(){
       ${usingLocalFallback ? `<div class="disclaimer">Saved on this device only right now — open this page the same way each time to keep your data.</div>`:''}
       ${saveFailedNotice ? `<div class="disclaimer" style="color:var(--bad);font-weight:700;">⚠️ Your last change couldn't reach the cloud, so it's only saved on this device for now. Try again with a good connection when you can.</div>`:''}
     </div>
-    <div class="app-version">Money Bloom · version 19 Oct 2026, 20:45</div>
+    ${notesHtml()}
+    <div class="app-version">Money Bloom · version 28 Oct 2026, 18:15</div>
     <div class="card">
       <h2>💾 Backup</h2>
       <p style="font-size:0.85rem;color:var(--text-soft);margin-top:-4px;">
@@ -1105,6 +1298,7 @@ function renderOverview(){
     // otherwise Income and Outgoings quietly keep showing the old one.
     renderAll();
   };
+  wireNotes(el);
   document.getElementById('ovPrev').addEventListener('click', ()=>goMonth(-1));
   document.getElementById('ovNext').addEventListener('click', ()=>goMonth(1));
   const todayBtn = document.getElementById('ovToday');
@@ -1289,7 +1483,8 @@ function setupBackupUI(){
         skips: (st.skips && typeof st.skips==='object') ? st.skips : {},
         paidMarks: (st.paidMarks && typeof st.paidMarks==='object') ? st.paidMarks : {},
         settings: (st.settings && typeof st.settings==='object') ? st.settings : {},
-        ideas: Array.isArray(st.ideas) ? st.ideas : []
+        ideas: Array.isArray(st.ideas) ? st.ideas : [],
+        notes: Array.isArray(st.notes) ? st.notes : []
       };
       backupNotice = 'Backup restored 🩷';
       forcedChangeLabel = 'Restored a backup';
